@@ -15,7 +15,10 @@ func _draw() -> void:
 	match game_ref.game_state:
 		"inventory":
 			_draw_hud_base(vp)
-			_draw_inventory(vp)
+			_draw_inventory(vp, false)
+		"storage_select":
+			_draw_hud_base(vp)
+			_draw_inventory(vp, true)
 		"dead":
 			_draw_hud_base(vp)
 			_draw_game_over(vp)
@@ -90,6 +93,10 @@ func _draw_hud_base(vp: Vector2) -> void:
 	draw_string(font, Vector2(ex, ey),
 		"指: %s" % _item_name(gref.p_ring),
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.90, 0.55, 0.20))
+	ey += 18
+	draw_string(font, Vector2(ex, ey),
+		"G : %d" % gref.p_gold,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(1.00, 0.85, 0.10))
 
 	# ── フロア番号 ───────────────────────────────────────
 	var fx := vp.x - 110.0
@@ -130,7 +137,7 @@ func _item_name(item: Dictionary) -> String:
 	return item.get("name", "?")
 
 # ─── インベントリ画面 ─────────────────────────────────────
-func _draw_inventory(vp: Vector2) -> void:
+func _draw_inventory(vp: Vector2, storage_mode: bool = false) -> void:
 	var font := ThemeDB.fallback_font
 	var gref := game_ref
 	# 半透明オーバーレイ
@@ -138,8 +145,10 @@ func _draw_inventory(vp: Vector2) -> void:
 
 	var title_x := vp.x / 2.0 - 120.0
 	var title_y := 40.0
-	draw_string(font, Vector2(title_x, title_y), "─── インベントリ ───",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color(0.95, 0.85, 0.25))
+	var title_text := "─── インベントリ ───" if not storage_mode else "─── 何をしまいますか？ ───"
+	var title_color := Color(0.95, 0.85, 0.25) if not storage_mode else Color(0.60, 0.90, 1.00)
+	draw_string(font, Vector2(title_x, title_y), title_text,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 20, title_color)
 
 	var inv: Array = gref.p_inventory
 	if inv.is_empty():
@@ -150,27 +159,43 @@ func _draw_inventory(vp: Vector2) -> void:
 			var item:  Dictionary = inv[i]
 			var iy := title_y + 36 + i * 26
 			var selected: bool = (i == gref.inv_cursor)
+			# storage_select中、壺自身はグレーアウト
+			var is_pot_self: bool = storage_mode and item.get("_iid", -2) == gref._storage_pot_iid
 			var bg_col := Color(0.20, 0.25, 0.35, 0.85) if selected else Color(0, 0, 0, 0)
 			draw_rect(Rect2(title_x - 8, iy - 18, 500, 24), bg_col)
 			var tag := _equip_tag(gref, item)
-			var col := ItemData.type_color(item.get("type", 0)) if not selected else Color.WHITE
+			var col: Color
+			if is_pot_self:
+				col = Color(0.45, 0.45, 0.45)
+			elif selected:
+				col = Color.WHITE
+			else:
+				col = ItemData.type_color(item.get("type", 0))
+			# 保存の壺は中身の個数を表示
+			var name_str: String = item.get("name", "?")
+			if item.get("effect", "") == "storage":
+				var cnt: int = item.get("contents", []).size()
+				name_str = "%s（%d個入り）" % [name_str, cnt]
 			draw_string(font,
 				Vector2(title_x, iy),
-				"%s%s %s" % [ItemData.type_symbol(item.get("type", 0)), tag, item.get("name", "?")],
+				"%s%s %s" % [ItemData.type_symbol(item.get("type", 0)), tag, name_str],
 				HORIZONTAL_ALIGNMENT_LEFT, 490, 15, col)
 
 	# 操作ガイド
 	var gy := vp.y - BAR_H - 30.0
 	draw_rect(Rect2(0, gy - 4, vp.x, 30), Color(0, 0, 0, 0.6))
+	var guide := "[↑↓] 選択   [Enter/Z] 使う/装備   [D] 捨てる   [I/Esc] 閉じる"
+	if storage_mode:
+		guide = "[↑↓] 選択   [Enter/Z] しまう   [Esc] キャンセル"
 	draw_string(font, Vector2(8, gy + 16),
-		"[↑↓] 選択   [Enter/Z] 使う/装備   [D] 捨てる   [I/Esc] 閉じる",
+		guide,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.70, 0.70, 0.70))
 
 func _equip_tag(gref: Node, item: Dictionary) -> String:
-	var id: String = item.get("id", "")
-	if gref.p_weapon.get("id", "") == id: return "[剣]"
-	if gref.p_shield.get("id", "") == id: return "[盾]"
-	if gref.p_ring.get("id","")   == id: return "[指]"
+	var iid: int = item.get("_iid", -2)
+	if gref.p_weapon.get("_iid", -1) == iid: return "[剣]"
+	if gref.p_shield.get("_iid", -1) == iid: return "[盾]"
+	if gref.p_ring.get("_iid",   -1) == iid: return "[指]"
 	return "    "
 
 # ─── ゲームオーバー ───────────────────────────────────────

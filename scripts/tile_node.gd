@@ -62,6 +62,19 @@ func _draw() -> void:
 			font_size,
 			fg_color)
 
+## 指定色で一瞬フラッシュして元に戻る
+func flash(color: Color = Color(1.0, 0.2, 0.2)) -> void:
+	if _sprite != null and is_instance_valid(_sprite):
+		_sprite.modulate = color
+		var tw := create_tween()
+		tw.tween_property(_sprite, "modulate", Color.WHITE, 0.12)
+	else:
+		var orig := bg_color
+		bg_color = color
+		queue_redraw()
+		var tw := create_tween()
+		tw.tween_callback(func() -> void: bg_color = orig; queue_redraw()).set_delay(0.12)
+
 ## グリッド座標からワールド座標へ変換してノードを移動
 func set_grid(gx: int, gy: int) -> void:
 	position = Vector2(gx * TILE_SIZE + TILE_SIZE / 2,

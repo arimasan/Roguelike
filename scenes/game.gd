@@ -32,6 +32,8 @@ var p_weapon:   Dictionary = {}
 var p_shield:   Dictionary = {}
 var p_ring:     Dictionary = {}
 var p_inventory: Array = []
+var p_gold:      int   = 0
+var p_blind_turns: int = 0   # 盲目ターン残数（0=通常視界）
 
 # ─── エンティティ ─────────────────────────────────────────
 # enemies: Array of { "data": dict, "hp": int, "grid_pos": V2i,
@@ -39,12 +41,21 @@ var p_inventory: Array = []
 var enemies:     Array = []
 # floor_items: Array of { "item": dict, "grid_pos": V2i, "node": Node2D }
 var floor_items: Array = []
+# gold_piles: Array of { "amount": int, "grid_pos": V2i, "node": Node2D }
+var gold_piles:  Array = []
 
 # ─── メッセージ ───────────────────────────────────────────
 var messages: Array = []
 
 # ─── インベントリカーソル ─────────────────────────────────
 var inv_cursor: int = 0
+
+# ─── アイテム個体ID ───────────────────────────────────────
+# インベントリに入る際に採番。同名アイテムを個別に識別するために使用。
+var _next_iid: int = 0
+
+# ─── 保存の壺 ─────────────────────────────────────────────
+var _storage_pot_iid: int = -1   # storage_select 中の壺の _iid
 
 # ─── ズーム ───────────────────────────────────────────────
 const ZOOM_LEVELS: Array[float] = [1.0, 2.0, 4.0]
@@ -56,9 +67,58 @@ var _entity_layer: Node2D  = null
 var _player_node   = null   # tile_node.gd スクリプト付き Node2D
 var _camera:       Camera2D = null
 var _hud           = null   # hud.gd スクリプト付き Control
+var _bgm_player:   AudioStreamPlayer = null
+var _options_layer: CanvasLayer = null
+var _lbl_master_pct: Label = null
+var _lbl_bgm_pct:    Label = null
+var _lbl_se_pct:     Label = null
+
+# ─── 音量設定 ────────────────────────────────────────────
+var vol_master: float = 1.0
+var vol_bgm:    float = 0.5   # デフォルト 50%
+var vol_se:     float = 1.0
+
+# ─── キーコンフィグ ──────────────────────────────────────
+const KEY_ACTIONS: Dictionary = {
+	"move_up":    {"label": "上移動",             "default": KEY_UP},
+	"move_down":  {"label": "下移動",             "default": KEY_DOWN},
+	"move_left":  {"label": "左移動",             "default": KEY_LEFT},
+	"move_right": {"label": "右移動",             "default": KEY_RIGHT},
+	"diag_mod":   {"label": "斜め移動モディファイア", "default": KEY_SHIFT},
+	"wait":       {"label": "待機",               "default": KEY_KP_5},
+	"inventory":  {"label": "インベントリ",        "default": KEY_I},
+	"pickup":     {"label": "拾う",               "default": KEY_G},
+	"descend":    {"label": "階段を降りる",        "default": KEY_SPACE},
+	"zoom_in":    {"label": "ズームイン",          "default": KEY_EQUAL},
+	"zoom_out":   {"label": "ズームアウト",        "default": KEY_MINUS},
+}
+var key_bindings:      Dictionary = {}
+var _rebinding_action: String     = ""
+var _rebind_button:    Button     = null
+
+# ─── BGM パス定義 ────────────────────────────────────────
+## 楽曲を差し替える際はここのパスを変更する（素材：MusMus https://musmus.work）
+const BGM := {
+	"explore":  "res://assets/bgm/explore.mp3",
+	# "boss":   "res://assets/bgm/boss.mp3",
+	# "gameover":"res://assets/bgm/gameover.mp3",
+	# "victory": "res://assets/bgm/victory.mp3",
+}
+
+# ─── SE パス定義 ─────────────────────────────────────────
+## 効果音を差し替える際はここのパスを変更する（素材：効果音ラボ https://soundeffect-lab.info）
+const SE := {
+	"attack": "res://assets/se/attack.mp3",
+	"hit":    "res://assets/se/hit.mp3",
+	"stairs": "res://assets/se/stairs.mp3",
+	"coin":   "res://assets/se/coin.mp3",
+	"pickup": "res://assets/se/pickup.mp3",
+}
 
 # ─── 初期化 ───────────────────────────────────────────────
 func _ready() -> void:
+	for action: String in KEY_ACTIONS:
+		key_bindings[action] = KEY_ACTIONS[action]["default"]
 	_build_scene_nodes()
 	_start_new_floor()
 
@@ -79,6 +139,14 @@ func _build_scene_nodes() -> void:
 	add_child(_camera)
 	_apply_zoom()
 
+	# BGM プレイヤー
+	_bgm_player = AudioStreamPlayer.new()
+	_bgm_player.bus = "Master"
+	add_child(_bgm_player)
+
+	# オプションパネル
+	_build_options_panel()
+
 	# CanvasLayer → HUD
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
@@ -96,6 +164,7 @@ func _start_new_floor() -> void:
 		ch.queue_free()
 	enemies.clear()
 	floor_items.clear()
+	gold_piles.clear()
 	explored.clear()
 	fov_visible.clear()
 
@@ -113,9 +182,10 @@ func _start_new_floor() -> void:
 	_player_node.call("set_grid", p_grid.x, p_grid.y)
 	_player_node.call("set_sprite", Assets.PLAYER)
 
-	# 敵・アイテム配置
+	# 敵・アイテム・お金配置
 	_spawn_enemies()
 	_spawn_items()
+	_spawn_gold()
 
 	# FOV更新・カメラ・HUD
 	_update_fov()
@@ -123,6 +193,7 @@ func _start_new_floor() -> void:
 	_update_camera()
 	_refresh_hud()
 
+	_play_bgm("explore")
 	add_message("B%dF に降りた。" % current_floor)
 
 # ─── 敵スポーン ───────────────────────────────────────────
@@ -161,6 +232,28 @@ func _spawn_items() -> void:
 		_place_floor_item(item, spawn_pos)
 		occupied.append(spawn_pos)
 
+func _spawn_gold() -> void:
+	var occupied: Array = [p_grid]
+	for enemy in enemies:
+		occupied.append(enemy["grid_pos"])
+	for fi in floor_items:
+		occupied.append(fi["grid_pos"])
+	var count: int = randi_range(2, 4)
+	for _i in count:
+		var pos: Vector2i = generator.random_floor_pos()
+		if pos in occupied:
+			continue
+		var amount: int = randi_range(current_floor * 3, current_floor * 10)
+		_place_gold_pile(amount, pos)
+		occupied.append(pos)
+
+func _place_gold_pile(amount: int, pos: Vector2i) -> void:
+	var node := _make_tile_node("$", Color(0.12, 0.12, 0.12), Color(1.0, 0.85, 0.0), 16)
+	_entity_layer.add_child(node)
+	node.call("set_grid", pos.x, pos.y)
+	node.call("set_sprite", "res://assets/sprites/items/gold.png")
+	gold_piles.append({"amount": amount, "grid_pos": pos, "node": node})
+
 func _place_floor_item(item: Dictionary, pos: Vector2i) -> void:
 	var sym := ItemData.type_symbol(item.get("type", 0))
 	var col := ItemData.type_color(item.get("type", 0))
@@ -176,54 +269,75 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	var kev := event as InputEventKey
 
+	var kc := kev.keycode
+
+	# リバインド待ち受け中
+	if game_state == "rebinding":
+		if kc == KEY_ESCAPE:
+			_cancel_rebind()
+		else:
+			_finish_rebind(kc)
+		return
+
 	# ズーム操作はゲーム状態に関わらず有効
-	match kev.keycode:
-		KEY_KP_ADD, KEY_EQUAL:   # + キー：拡大
-			_zoom_index = min(_zoom_index + 1, ZOOM_LEVELS.size() - 1)
-			_apply_zoom()
-			return
-		KEY_KP_SUBTRACT, KEY_MINUS:   # - キー：縮小
-			_zoom_index = max(_zoom_index - 1, 0)
-			_apply_zoom()
-			return
+	if kc == key_bindings.get("zoom_in", KEY_EQUAL) or kc == KEY_KP_ADD:
+		_zoom_index = min(_zoom_index + 1, ZOOM_LEVELS.size() - 1)
+		_apply_zoom()
+		return
+	if kc == key_bindings.get("zoom_out", KEY_MINUS) or kc == KEY_KP_SUBTRACT:
+		_zoom_index = max(_zoom_index - 1, 0)
+		_apply_zoom()
+		return
 
 	match game_state:
 		"playing":
-			# '>' は unicode で判定（Shift+. はkeycodeがKEY_PERIODになるため）
-			if kev.unicode == 62:   # '>'
+			if kc == KEY_ESCAPE:
+				_open_options()
+				return
+			if kc == key_bindings.get("descend", KEY_SLASH):
 				_try_descend()
 				return
-			_handle_play_input(kev.keycode)
+			_handle_play_input(kc)
 		"inventory":
-			_handle_inv_input(kev.keycode)
+			_handle_inv_input(kc)
+		"storage_select":
+			_handle_storage_input(kc)
+		"options":
+			if kc == KEY_ESCAPE:
+				_close_options()
+				return
 		"dead", "victory":
-			if kev.keycode == KEY_R:
+			if kc == KEY_R:
 				get_tree().reload_current_scene()
 
 func _apply_zoom() -> void:
 	var z: float = ZOOM_LEVELS[_zoom_index]
 	_camera.zoom = Vector2(z, z)
 
-func _diagonal_held() -> bool:
-	return Input.is_key_pressed(KEY_KP_7) or Input.is_key_pressed(KEY_KP_9) \
-		or Input.is_key_pressed(KEY_KP_1) or Input.is_key_pressed(KEY_KP_3)
-
 func _handle_play_input(kc: int) -> void:
-	# 斜めキーを押しながらの場合、斜め移動以外は受け付けない
-	if _diagonal_held() and kc not in [KEY_KP_7, KEY_KP_9, KEY_KP_1, KEY_KP_3]:
-		return
-	match kc:
-		KEY_LEFT,  KEY_H, KEY_KP_4: _try_player_move(Vector2i(-1,  0))
-		KEY_RIGHT, KEY_L, KEY_KP_6: _try_player_move(Vector2i( 1,  0))
-		KEY_UP,    KEY_K, KEY_KP_8: _try_player_move(Vector2i( 0, -1))
-		KEY_DOWN,  KEY_J, KEY_KP_2: _try_player_move(Vector2i( 0,  1))
-		KEY_KP_7:                   _try_player_move(Vector2i(-1, -1))
-		KEY_KP_9:                   _try_player_move(Vector2i( 1, -1))
-		KEY_KP_1:                   _try_player_move(Vector2i(-1,  1))
-		KEY_KP_3:                   _try_player_move(Vector2i( 1,  1))
-		KEY_PERIOD, KEY_KP_5:       _player_wait()
-		KEY_I:                      _open_inventory()
-		KEY_G:                      _try_pickup()
+	var mod: int = key_bindings.get("diag_mod", KEY_SHIFT)
+
+	# 斜め移動：モディファイア + 2方向キー同時押し
+	# モディファイア押下中は通常移動を一切発火させない（桂馬移動防止）
+	if Input.is_key_pressed(mod):
+		var up_h    := Input.is_key_pressed(key_bindings.get("move_up",    KEY_UP))
+		var down_h  := Input.is_key_pressed(key_bindings.get("move_down",  KEY_DOWN))
+		var left_h  := Input.is_key_pressed(key_bindings.get("move_left",  KEY_LEFT))
+		var right_h := Input.is_key_pressed(key_bindings.get("move_right", KEY_RIGHT))
+		if   up_h   and left_h:  _try_player_move(Vector2i(-1, -1))
+		elif up_h   and right_h: _try_player_move(Vector2i( 1, -1))
+		elif down_h and left_h:  _try_player_move(Vector2i(-1,  1))
+		elif down_h and right_h: _try_player_move(Vector2i( 1,  1))
+		return  # 2方向揃っていない場合も含め、常にここで止める
+
+	# 4方向移動・その他
+	if   kc == key_bindings.get("move_left",  KEY_LEFT):  _try_player_move(Vector2i(-1,  0))
+	elif kc == key_bindings.get("move_right", KEY_RIGHT): _try_player_move(Vector2i( 1,  0))
+	elif kc == key_bindings.get("move_up",    KEY_UP):    _try_player_move(Vector2i( 0, -1))
+	elif kc == key_bindings.get("move_down",  KEY_DOWN):  _try_player_move(Vector2i( 0,  1))
+	elif kc == key_bindings.get("wait",       KEY_KP_5):  _player_wait()
+	elif kc == key_bindings.get("inventory",  KEY_I):     _open_inventory()
+	elif kc == key_bindings.get("pickup",     KEY_G):     _try_pickup()
 
 func _handle_inv_input(kc: int) -> void:
 	match kc:
@@ -260,7 +374,8 @@ func _try_player_move(dir: Vector2i) -> void:
 	_auto_pickup()
 	# 階段チェック
 	if generator.get_tile(p_grid.x, p_grid.y) == DungeonGenerator.TILE_STAIRS:
-		add_message("階段を見つけた！ [>] で降りる")
+		var descend_key := OS.get_keycode_string(key_bindings.get("descend", KEY_SPACE))
+		add_message("階段を見つけた！ [%s] で降りる" % descend_key)
 	_end_player_turn()
 
 func _player_wait() -> void:
@@ -274,6 +389,7 @@ func _try_descend() -> void:
 	if current_floor >= MAX_FLOOR:
 		_trigger_victory()
 		return
+	_play_se("stairs")
 	current_floor += 1
 	_start_new_floor()
 
@@ -289,16 +405,32 @@ func _auto_pickup() -> void:
 	var fi = _item_at(p_grid)
 	if fi != null:
 		_pickup_item(fi)
+	_collect_gold(p_grid)
+
+func _collect_gold(pos: Vector2i) -> void:
+	for pile in gold_piles:
+		if (pile["grid_pos"] as Vector2i) == pos:
+			p_gold += pile["amount"]
+			add_message("お金を %d G 拾った。（所持金: %d G）" % [pile["amount"], p_gold])
+			pile["node"].queue_free()
+			gold_piles.erase(pile)
+			_play_se("coin")
+			return
 
 func _pickup_item(fi: Dictionary) -> void:
 	if p_inventory.size() >= MAX_INVENTORY:
 		add_message("荷物がいっぱいで拾えない！")
 		return
 	var item: Dictionary = fi["item"]
+	# インベントリ入りのタイミングで個体IDを付与（未付与の場合のみ）
+	if not item.has("_iid"):
+		item["_iid"] = _next_iid
+		_next_iid += 1
 	p_inventory.append(item)
 	fi["node"].queue_free()
 	floor_items.erase(fi)
 	add_message("%s を拾った。" % item.get("name", "?"))
+	_play_se("pickup")
 
 func _end_player_turn() -> void:
 	# 満腹度
@@ -312,6 +444,11 @@ func _end_player_turn() -> void:
 	# 回復指輪
 	if p_ring.get("effect", "") == "regen" and turn_count % 5 == 0:
 		p_hp = min(p_hp_max, p_hp + 1)
+	# 盲目カウントダウン
+	if p_blind_turns > 0:
+		p_blind_turns -= 1
+		if p_blind_turns == 0:
+			add_message("目が見えるようになった。")
 	_enemy_turns()
 	_update_fov()
 	_sync_entity_visibility()
@@ -326,6 +463,9 @@ func _player_attack(enemy: Dictionary) -> void:
 		dmg += randi_range(1, 4)
 	enemy["hp"] -= dmg
 	enemy["alerted"] = true
+	enemy["node"].call("flash", Color(1.0, 0.2, 0.2))
+	_show_damage_number(enemy["grid_pos"] as Vector2i, str(dmg), Color(1.0, 0.4, 0.4))
+	_play_se("attack")
 	add_message("%s に %d ダメージ！" % [enemy["data"]["name"], dmg])
 	if enemy["hp"] <= 0:
 		_kill_enemy(enemy)
@@ -355,6 +495,10 @@ func _check_level_up() -> void:
 # ─── 戦闘：敵 → プレイヤー ───────────────────────────────
 func _apply_damage_to_player(dmg: int, source: String) -> void:
 	p_hp -= dmg
+	_player_node.call("flash", Color(1.0, 0.2, 0.2))
+	_show_damage_number(p_grid, str(dmg), Color(1.0, 0.7, 0.7))
+	_camera_shake()
+	_play_se("hit")
 	if source != "":
 		add_message("%s から %d ダメージ！" % [source, dmg])
 	if p_hp <= 0:
@@ -376,6 +520,16 @@ func _single_enemy_turn(enemy: Dictionary) -> void:
 			enemy["asleep"] = false
 	if enemy.get("asleep", false):
 		return
+
+	# 毒DoT：毎ターン2ダメージ
+	if enemy.get("poisoned", 0) > 0:
+		enemy["poisoned"] -= 1
+		enemy["hp"] -= 2
+		enemy["node"].call("flash", Color(0.5, 1.0, 0.2))
+		add_message("%s は毒で 2 ダメージ！" % enemy["data"]["name"])
+		if enemy["hp"] <= 0:
+			_kill_enemy(enemy)
+			return
 
 	# regen: HPを1回復
 	if enemy["data"].get("behavior", "") == "regen":
@@ -482,7 +636,7 @@ func _apply_item(item: Dictionary) -> bool:
 	var t: int = item.get("type", -1)
 	match t:
 		ItemData.TYPE_WEAPON:
-			if p_weapon.get("id","") == item.get("id",""):
+			if p_weapon.get("_iid", -1) == item.get("_iid", -2):
 				p_weapon = {}
 				add_message("%s を外した。" % item.get("name","?"))
 			else:
@@ -493,7 +647,7 @@ func _apply_item(item: Dictionary) -> bool:
 			return false   # インベントリに残す
 
 		ItemData.TYPE_SHIELD:
-			if p_shield.get("id","") == item.get("id",""):
+			if p_shield.get("_iid", -1) == item.get("_iid", -2):
 				p_shield = {}
 				add_message("%s を外した。" % item.get("name","?"))
 			else:
@@ -502,7 +656,7 @@ func _apply_item(item: Dictionary) -> bool:
 			return false
 
 		ItemData.TYPE_RING:
-			if p_ring.get("id","") == item.get("id",""):
+			if p_ring.get("_iid", -1) == item.get("_iid", -2):
 				p_ring = {}
 				add_message("%s を外した。" % item.get("name","?"))
 			else:
@@ -533,6 +687,8 @@ func _apply_item(item: Dictionary) -> bool:
 			return true
 
 		ItemData.TYPE_POT:
+			if item.get("effect", "") == "storage":
+				return _apply_pot_storage(item)
 			_apply_pot(item)
 			var uses: int = item.get("uses", 1) - 1
 			if uses <= 0:
@@ -618,20 +774,89 @@ func _apply_pot(item: Dictionary) -> void:
 			p_hp = min(p_hp_max, p_hp + heal)
 			add_message("HP が %d 回復した。" % heal)
 		"poison":
+			var hit_count := 0
 			for enemy in enemies:
 				if fov_visible.has(enemy["grid_pos"] as Vector2i):
-					var dmg := randi_range(5, 12)
-					enemy["hp"] -= dmg
-					add_message("%s に %d ダメージ！" % [enemy["data"]["name"], dmg])
-					if enemy["hp"] <= 0:
-						_kill_enemy(enemy)
+					enemy["poisoned"] = 8
+					enemy["node"].call("flash", Color(0.5, 1.0, 0.2))
+					add_message("%s に毒を浴びせた！" % enemy["data"]["name"])
+					hit_count += 1
+			if hit_count == 0:
+				add_message("しかし周囲に敵はいない。")
 		"strength":
 			p_atk_base += 3
 			add_message("力が 3 上がった！")
 		"blind":
-			add_message("なぜか自分の目が見えなくなった…（視界1）")
-		"storage":
-			add_message("何も入っていない壺だった。")
+			p_blind_turns = 10
+			add_message("目の前が真っ暗になった！（10ターン視界1）")
+
+## 保存の壺：中身があれば取り出し、空ならしまうモードへ移行
+func _apply_pot_storage(item: Dictionary) -> bool:
+	var contents: Array = item.get("contents", [])
+	if not contents.is_empty():
+		add_message("壺からアイテムを取り出した！")
+		for stored in contents:
+			if p_inventory.size() < MAX_INVENTORY:
+				p_inventory.append(stored)
+				add_message("  %s を取り出した。" % stored.get("name", "?"))
+			else:
+				_place_floor_item(stored, p_grid)
+				add_message("  %s は荷物がいっぱいで床に落ちた。" % stored.get("name", "?"))
+		return true   # 壺を消費
+	# 空壺：しまう操作モードへ
+	_storage_pot_iid = item.get("_iid", -1)
+	game_state = "storage_select"
+	add_message("何をしまいますか？ [Enter/Z] しまう  [Esc] キャンセル")
+	_refresh_hud()
+	return false   # インベントリに残す
+
+## 保存の壺しまうモードの入力処理
+func _handle_storage_input(kc: int) -> void:
+	match kc:
+		KEY_ESCAPE:
+			game_state = "playing"
+			add_message("キャンセルした。")
+			_refresh_hud()
+			return
+		KEY_UP, KEY_K:
+			inv_cursor = max(0, inv_cursor - 1)
+			_refresh_hud()
+			return
+		KEY_DOWN, KEY_J:
+			inv_cursor = min(p_inventory.size() - 1, inv_cursor + 1)
+			_refresh_hud()
+			return
+		KEY_ENTER, KEY_Z, KEY_KP_ENTER:
+			pass   # 以下で処理
+		_:
+			return
+
+	# 選択アイテムを壺に入れる
+	inv_cursor = clamp(inv_cursor, 0, p_inventory.size() - 1)
+	var target_item: Dictionary = p_inventory[inv_cursor]
+	# 壺自身は入れられない
+	if target_item.get("_iid", -2) == _storage_pot_iid:
+		add_message("壺に壺は入れられない。")
+		return
+	# 装備中は入れられない
+	if p_weapon.get("_iid", -1) == target_item.get("_iid", -2) \
+			or p_shield.get("_iid", -1) == target_item.get("_iid", -2) \
+			or p_ring.get("_iid",   -1) == target_item.get("_iid", -2):
+		add_message("装備中のアイテムはしまえない。")
+		return
+	# 壺を探してcontentsに追加
+	for pot in p_inventory:
+		if pot.get("_iid", -1) == _storage_pot_iid:
+			if not pot.has("contents"):
+				pot["contents"] = []
+			pot["contents"].append(target_item)
+			p_inventory.remove_at(inv_cursor)
+			inv_cursor = min(inv_cursor, p_inventory.size() - 1)
+			add_message("%s を壺にしまった。" % target_item.get("name", "?"))
+			break
+	game_state = "playing"
+	_end_player_turn()
+	_refresh_hud()
 
 func _apply_staff(item: Dictionary) -> void:
 	var effect: String = item.get("effect", "")
@@ -734,12 +959,12 @@ func _drop_selected_item() -> void:
 		return
 	inv_cursor = clamp(inv_cursor, 0, p_inventory.size() - 1)
 	var item: Dictionary = p_inventory[inv_cursor]
-	# 装備中なら外す
-	if p_weapon.get("id","") == item.get("id","") and not item.get("cursed", false):
+	# 装備中なら外す（_iid で個体一致を確認）
+	if p_weapon.get("_iid", -1) == item.get("_iid", -2) and not item.get("cursed", false):
 		p_weapon = {}
-	if p_shield.get("id","") == item.get("id",""):
+	if p_shield.get("_iid", -1) == item.get("_iid", -2):
 		p_shield = {}
-	if p_ring.get("id","") == item.get("id",""):
+	if p_ring.get("_iid", -1) == item.get("_iid", -2):
 		p_ring = {}
 	_place_floor_item(item, p_grid)
 	p_inventory.remove_at(inv_cursor)
@@ -753,7 +978,9 @@ func _drop_selected_item() -> void:
 func _update_fov() -> void:
 	fov_visible.clear()
 	var radius := FOV_RADIUS
-	if p_ring.get("effect", "") == "detection":
+	if p_blind_turns > 0:
+		radius = 1
+	elif p_ring.get("effect", "") == "detection":
 		radius = 15
 	for dy in range(-radius, radius + 1):
 		for dx in range(-radius, radius + 1):
@@ -801,6 +1028,9 @@ func _sync_entity_visibility() -> void:
 	# アイテム：探索済みなら表示
 	for fi in floor_items:
 		fi["node"].visible = explored.has(fi["grid_pos"] as Vector2i)
+	# ゴールド：探索済みなら表示
+	for pile in gold_piles:
+		pile["node"].visible = explored.has(pile["grid_pos"] as Vector2i)
 
 # ─── カメラ更新 ───────────────────────────────────────────
 func _update_camera() -> void:
@@ -823,6 +1053,269 @@ func _trigger_victory() -> void:
 	game_state = "victory"
 	add_message("古代の守護者を倒し、遺産を持ち帰った！")
 	_refresh_hud()
+
+# ─── BGM ─────────────────────────────────────────────────
+func _play_bgm(key: String) -> void:
+	if not BGM.has(key):
+		return
+	var path: String = BGM[key]
+	if not ResourceLoader.exists(path):
+		return
+	# 同じ曲が再生中なら何もしない
+	var stream := load(path) as AudioStreamMP3
+	if stream == null:
+		return
+	stream.loop = true
+	_bgm_player.stream    = stream
+	_bgm_player.volume_db = _linear_to_db_safe(vol_bgm)
+	_bgm_player.play()
+
+func _stop_bgm() -> void:
+	_bgm_player.stop()
+
+# ─── オプション ───────────────────────────────────────────
+func _build_options_panel() -> void:
+	_options_layer = CanvasLayer.new()
+	_options_layer.layer   = 10
+	_options_layer.visible = false
+	add_child(_options_layer)
+
+	# 背景オーバーレイ
+	var overlay := ColorRect.new()
+	overlay.color = Color(0, 0, 0, 0.65)
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_options_layer.add_child(overlay)
+
+	# パネル本体（中央固定）
+	var panel := Panel.new()
+	panel.custom_minimum_size = Vector2(500, 440)
+	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	panel.offset_left   = -250.0
+	panel.offset_top    = -220.0
+	panel.offset_right  =  250.0
+	panel.offset_bottom =  220.0
+	_options_layer.add_child(panel)
+
+	var margin := MarginContainer.new()
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for side in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(side, 16)
+	panel.add_child(margin)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 10)
+	margin.add_child(vbox)
+
+	var title := Label.new()
+	title.text = "─── オプション ───"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 17)
+	vbox.add_child(title)
+
+	# タブコンテナ
+	var tabs := TabContainer.new()
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(tabs)
+
+	# ── タブ1: 音量設定 ──
+	var vol_container := VBoxContainer.new()
+	vol_container.name = "音量設定"
+	vol_container.add_theme_constant_override("separation", 14)
+	tabs.add_child(vol_container)
+
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(0, 6)
+	vol_container.add_child(spacer)
+
+	_lbl_master_pct = _add_volume_row(vol_container, "マスター音量", vol_master, func(v: float) -> void:
+		vol_master = v
+		_lbl_master_pct.text = "%d%%" % int(v * 100)
+		AudioServer.set_bus_volume_db(
+			AudioServer.get_bus_index("Master"), _linear_to_db_safe(vol_master))
+	)
+	_lbl_bgm_pct = _add_volume_row(vol_container, "BGM 音量", vol_bgm, func(v: float) -> void:
+		vol_bgm = v
+		_lbl_bgm_pct.text = "%d%%" % int(v * 100)
+		if is_instance_valid(_bgm_player):
+			_bgm_player.volume_db = _linear_to_db_safe(vol_bgm)
+	)
+	_lbl_se_pct = _add_volume_row(vol_container, "SE 音量", vol_se, func(v: float) -> void:
+		vol_se = v
+		_lbl_se_pct.text = "%d%%" % int(v * 100)
+	)
+
+	# ── タブ2: キーコンフィグ ──
+	var key_outer := VBoxContainer.new()
+	key_outer.name = "キーコンフィグ"
+	key_outer.add_theme_constant_override("separation", 6)
+	tabs.add_child(key_outer)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	key_outer.add_child(scroll)
+
+	var key_vbox := VBoxContainer.new()
+	key_vbox.add_theme_constant_override("separation", 4)
+	key_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(key_vbox)
+
+	for action: String in KEY_ACTIONS:
+		_add_key_row(key_vbox, action)
+
+	var reset_btn := Button.new()
+	reset_btn.text = "デフォルトに戻す"
+	reset_btn.pressed.connect(_reset_key_bindings)
+	key_outer.add_child(reset_btn)
+
+	# 閉じるボタン
+	var close_btn := Button.new()
+	close_btn.text = "閉じる  [ Esc ]"
+	close_btn.pressed.connect(_close_options)
+	vbox.add_child(close_btn)
+
+## スライダー行を生成して追加。パーセント表示ラベルを返す
+func _add_volume_row(parent: Control, label_text: String,
+		initial: float, on_change: Callable) -> Label:
+	var hbox := HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 8)
+	parent.add_child(hbox)
+
+	var lbl := Label.new()
+	lbl.text = label_text
+	lbl.custom_minimum_size = Vector2(110, 0)
+	lbl.add_theme_font_size_override("font_size", 14)
+	hbox.add_child(lbl)
+
+	var slider := HSlider.new()
+	slider.min_value = 0.0
+	slider.max_value = 1.0
+	slider.step      = 0.01
+	slider.value     = initial
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hbox.add_child(slider)
+
+	var pct := Label.new()
+	pct.text = "%d%%" % int(initial * 100)
+	pct.custom_minimum_size    = Vector2(44, 0)
+	pct.horizontal_alignment   = HORIZONTAL_ALIGNMENT_RIGHT
+	pct.add_theme_font_size_override("font_size", 14)
+	hbox.add_child(pct)
+
+	slider.value_changed.connect(on_change)
+	return pct
+
+## キーコンフィグ行を生成する
+func _add_key_row(parent: Control, action: String) -> void:
+	var hbox := HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 8)
+	parent.add_child(hbox)
+
+	var lbl := Label.new()
+	lbl.text = KEY_ACTIONS[action]["label"]
+	lbl.custom_minimum_size = Vector2(130, 0)
+	lbl.add_theme_font_size_override("font_size", 13)
+	hbox.add_child(lbl)
+
+	var btn := Button.new()
+	btn.text = OS.get_keycode_string(key_bindings.get(action, 0))
+	btn.custom_minimum_size = Vector2(160, 0)
+	btn.name = "keybind_" + action
+	btn.pressed.connect(_start_rebind.bind(action, btn))
+	hbox.add_child(btn)
+
+## リバインド開始
+func _start_rebind(action: String, btn: Button) -> void:
+	_rebinding_action = action
+	_rebind_button    = btn
+	btn.text          = "--- 押してください ---"
+	game_state        = "rebinding"
+
+## リバインド確定
+func _finish_rebind(kc: int) -> void:
+	key_bindings[_rebinding_action] = kc
+	_rebind_button.text = OS.get_keycode_string(kc)
+	_rebinding_action   = ""
+	_rebind_button      = null
+	game_state          = "options"
+
+## リバインドキャンセル（Esc）
+func _cancel_rebind() -> void:
+	if _rebind_button != null:
+		_rebind_button.text = OS.get_keycode_string(
+			key_bindings.get(_rebinding_action, 0))
+	_rebinding_action = ""
+	_rebind_button    = null
+	game_state        = "options"
+
+## キーバインドをデフォルトに戻す
+func _reset_key_bindings() -> void:
+	for action: String in KEY_ACTIONS:
+		key_bindings[action] = KEY_ACTIONS[action]["default"]
+	# ボタン表示を更新
+	for action: String in KEY_ACTIONS:
+		var btn := _options_layer.find_child("keybind_" + action, true, false) as Button
+		if btn:
+			btn.text = OS.get_keycode_string(key_bindings[action])
+
+func _open_options() -> void:
+	_options_layer.visible = true
+	game_state = "options"
+
+func _close_options() -> void:
+	_options_layer.visible = false
+	game_state = "playing"
+
+func _linear_to_db_safe(linear: float) -> float:
+	if linear <= 0.0:
+		return -80.0
+	return linear_to_db(linear)
+
+## SE を再生する（同時に複数鳴らせるよう都度プレイヤーを生成）
+## 自然終了 または 最大 3 秒で停止・解放する
+func _play_se(key: String) -> void:
+	if not SE.has(key):
+		return
+	var path: String = SE[key]
+	if not ResourceLoader.exists(path):
+		return
+	var player := AudioStreamPlayer.new()
+	add_child(player)
+	player.stream    = load(path) as AudioStream
+	player.volume_db = _linear_to_db_safe(vol_se)
+	player.play()
+	# 自然終了時に解放
+	player.finished.connect(player.queue_free)
+	# 3秒タイムアウト（長い効果音の強制停止）
+	get_tree().create_timer(3.0).timeout.connect(func() -> void:
+		if is_instance_valid(player):
+			player.queue_free()
+	)
+
+# ─── 演出 ────────────────────────────────────────────────
+## ダメージ数字をグリッド座標に浮かせて表示
+func _show_damage_number(grid_pos: Vector2i, text: String, color: Color) -> void:
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.add_theme_color_override("font_color", color)
+	lbl.add_theme_font_size_override("font_size", 8)
+	lbl.position = Vector2(
+		grid_pos.x * TILE_SIZE + TILE_SIZE * 0.25,
+		grid_pos.y * TILE_SIZE - 4.0
+	)
+	_entity_layer.add_child(lbl)
+	var tw := lbl.create_tween()
+	tw.tween_property(lbl, "position:y", lbl.position.y - 20.0, 0.55)
+	tw.parallel().tween_property(lbl, "modulate:a", 0.0, 0.55)
+	tw.tween_callback(lbl.queue_free)
+
+## カメラを短時間揺らす
+func _camera_shake(intensity: float = 3.0, duration: float = 0.22) -> void:
+	var tw := create_tween()
+	var steps := 5
+	for _i in steps:
+		var off := Vector2(randf_range(-intensity, intensity), randf_range(-intensity, intensity))
+		tw.tween_property(_camera, "offset", off, duration / steps)
+	tw.tween_property(_camera, "offset", Vector2.ZERO, 0.04)
 
 # ─── ユーティリティ ───────────────────────────────────────
 func calc_atk() -> int:
