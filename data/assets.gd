@@ -33,11 +33,17 @@ const ITEM_TYPES := {
 	0: "res://assets/sprites/items/weapon.png",   # 武器
 	1: "res://assets/sprites/items/shield.png",   # 盾
 	2: "res://assets/sprites/items/food.png",     # 食料
-	3: "res://assets/sprites/items/scroll.png",   # 巻物
-	4: "res://assets/sprites/items/pot.png",      # 壺
+	3: "res://assets/sprites/items/scroll.png",   # 本
+	4: "res://assets/sprites/items/pot.png",      # 箱
 	5: "res://assets/sprites/items/ring.png",     # 指輪
 	6: "res://assets/sprites/items/staff.png",    # 杖
 }
+
+# ─── 店 ─────────────────────────────────────────────────────
+const SHOP_KEEPER  := "res://assets/sprites/shop/shopkeeper.png"
+const SHOP_SIGN    := "res://assets/sprites/shop/shop_sign.png"
+const SHOP_FLOOR   := "res://assets/sprites/shop/shop_floor.png"
+const SHOP_CARPET  := "res://assets/sprites/shop/shop_carpet.png"
 
 # ─── ユーティリティ ─────────────────────────────────────────
 ## 敵IDからスプライトパスを取得

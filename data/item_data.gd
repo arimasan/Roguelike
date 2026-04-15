@@ -54,20 +54,20 @@ const ALL: Array = [
 	{"id":"herb",          "name":"薬草",           "type":TYPE_FOOD, "fullness":10, "heal":20, "weight":28},
 	{"id":"power_herb",    "name":"力の薬草",       "type":TYPE_FOOD, "fullness":10, "heal":0, "atk_up":2, "weight":10},
 	{"id":"rotten_food",   "name":"腐った食料",     "type":TYPE_FOOD, "fullness":-30,"weight":8},
-	# ── 巻物 ────────────────────────────────────────────────
-	{"id":"sc_identify",   "name":"識別の巻物",     "type":TYPE_SCROLL, "effect":"identify",  "weight":20},
-	{"id":"sc_warp",       "name":"転移の巻物",     "type":TYPE_SCROLL, "effect":"warp",      "weight":18},
-	{"id":"sc_explosion",  "name":"爆発の巻物",     "type":TYPE_SCROLL, "effect":"explosion", "weight":14},
-	{"id":"sc_uncurse",    "name":"魔除けの巻物",   "type":TYPE_SCROLL, "effect":"uncurse",   "weight":16},
-	{"id":"sc_sleep",      "name":"眠りの巻物",     "type":TYPE_SCROLL, "effect":"sleep",     "weight":16},
-	{"id":"sc_map",        "name":"地図の巻物",     "type":TYPE_SCROLL, "effect":"map",       "weight":14},
-	{"id":"sc_monster",    "name":"モンスターの巻物","type":TYPE_SCROLL,"effect":"monster",   "weight":8},
-	# ── 壺 ──────────────────────────────────────────────────
-	{"id":"pot_heal",      "name":"回復の壺",  "type":TYPE_POT, "effect":"heal",    "uses":3, "weight":22},
-	{"id":"pot_poison",    "name":"毒の壺",    "type":TYPE_POT, "effect":"poison",  "uses":3, "weight":15},
-	{"id":"pot_storage",   "name":"保存の壺",  "type":TYPE_POT, "effect":"storage", "uses":5, "weight":12},
-	{"id":"pot_blind",     "name":"盲目の壺",  "type":TYPE_POT, "effect":"blind",   "uses":3, "weight":10},
-	{"id":"pot_strength",  "name":"強化の壺",  "type":TYPE_POT, "effect":"strength","uses":2, "weight":8},
+	# ── 本 ──────────────────────────────────────────────────
+	{"id":"sc_identify",   "name":"識別の本",     "type":TYPE_SCROLL, "effect":"identify",  "weight":20},
+	{"id":"sc_warp",       "name":"転移の本",     "type":TYPE_SCROLL, "effect":"warp",      "weight":18},
+	{"id":"sc_explosion",  "name":"爆発の本",     "type":TYPE_SCROLL, "effect":"explosion", "weight":14},
+	{"id":"sc_uncurse",    "name":"魔除けの本",   "type":TYPE_SCROLL, "effect":"uncurse",   "weight":16},
+	{"id":"sc_sleep",      "name":"眠りの本",     "type":TYPE_SCROLL, "effect":"sleep",     "weight":16},
+	{"id":"sc_map",        "name":"地図の本",     "type":TYPE_SCROLL, "effect":"map",       "weight":14},
+	{"id":"sc_monster",    "name":"モンスターの本","type":TYPE_SCROLL,"effect":"monster",   "weight":8},
+	# ── 箱 ──────────────────────────────────────────────────
+	{"id":"pot_heal",      "name":"回復の箱",  "type":TYPE_POT, "effect":"heal",    "uses":3, "weight":22},
+	{"id":"pot_poison",    "name":"毒の箱",    "type":TYPE_POT, "effect":"poison",  "uses":3, "weight":15},
+	{"id":"pot_storage",   "name":"保存の箱",  "type":TYPE_POT, "effect":"storage", "uses":5, "weight":12},
+	{"id":"pot_blind",     "name":"盲目の箱",  "type":TYPE_POT, "effect":"blind",   "uses":3, "weight":10},
+	{"id":"pot_strength",  "name":"強化の箱",  "type":TYPE_POT, "effect":"strength","uses":2, "weight":8},
 	# ── 指輪 ────────────────────────────────────────────────
 	{"id":"ring_regen",    "name":"回復指輪",   "type":TYPE_RING, "effect":"regen",       "weight":12},
 	{"id":"ring_hunger",   "name":"満腹指輪",   "type":TYPE_RING, "effect":"slow_hunger", "weight":12},
@@ -83,6 +83,23 @@ const ALL: Array = [
 	{"id":"staff_seal",      "name":"封印の杖",       "type":TYPE_STAFF, "effect":"seal",      "uses":4, "weight":10},
 	{"id":"staff_magic",     "name":"魔力の杖",       "type":TYPE_STAFF, "effect":"magic",     "uses":2, "weight":6},
 ]
+
+static func sell_price(item: Dictionary) -> int:
+	return max(1, shop_price(item) / 2)
+
+static func shop_price(item: Dictionary) -> int:
+	var base := 50
+	match item.get("type", -1):
+		TYPE_WEAPON: base = max(50,  item.get("atk",      0) * 15 + 30)
+		TYPE_SHIELD: base = max(50,  item.get("def",      0) * 15 + 30)
+		TYPE_FOOD:   base = max(20,  item.get("fullness", 0) / 2  + 15)
+		TYPE_SCROLL: base = 80
+		TYPE_POT:    base = max(60,  item.get("uses",     1) * 25 + 30)
+		TYPE_RING:   base = 150
+		TYPE_STAFF:  base = max(60,  item.get("uses",     1) * 30 + 40)
+	if item.get("cursed", false):
+		base = max(10, base / 3)
+	return base
 
 static func get_by_id(item_id: String) -> Dictionary:
 	for item in ALL:

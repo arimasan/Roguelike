@@ -7,6 +7,18 @@ const BAR_H     := 100      # 下部ステータスバーの高さ
 const MSG_W     := 0        # メッセージ表示はバー内
 const MSG_LINES := 6        # 表示するメッセージ行数
 
+# アイテム種別アイコンのテクスチャキャッシュ（type_int → Texture2D）
+# _draw() 内で load() するとGPU未アップロードで白くなるため、事前にロードしておく
+var _icon_cache: Dictionary = {}
+
+func _ready() -> void:
+	for type_int in range(7):
+		var path: String = Assets.item_type_sprite(type_int)
+		if not path.is_empty() and ResourceLoader.exists(path):
+			var tex := load(path) as Texture2D
+			if tex != null:
+				_icon_cache[type_int] = tex
+
 func _draw() -> void:
 	if game_ref == null:
 		return
@@ -19,6 +31,9 @@ func _draw() -> void:
 		"storage_select":
 			_draw_hud_base(vp)
 			_draw_inventory(vp, true)
+		"shop":
+			_draw_hud_base(vp)
+			_draw_shop(vp)
 		"dead":
 			_draw_hud_base(vp)
 			_draw_game_over(vp)
@@ -112,6 +127,10 @@ func _draw_hud_base(vp: Vector2) -> void:
 	# ── メッセージログ ────────────────────────────────────
 	_draw_messages(vp, font)
 
+	# ── ミニマップ ────────────────────────────────────────
+	if game_ref.show_minimap:
+		_draw_minimap(vp)
+
 func _draw_bar(pos: Vector2, width: int, height: int,
 		ratio: float, fill: Color, bg: Color) -> void:
 	draw_rect(Rect2(pos, Vector2(width, height)), bg)
@@ -130,6 +149,76 @@ func _draw_messages(vp: Vector2, font: Font) -> void:
 		var alpha := 1.0 - age * 0.15
 		draw_string(font, Vector2(8, my + (i - start) * 20 + 16),
 			msgs[i], HORIZONTAL_ALIGNMENT_LEFT, 490, 14, Color(1, 1, 1, alpha))
+
+# ─── ミニマップ ──────────────────────────────────────────────
+func _draw_minimap(vp: Vector2) -> void:
+	var gref := game_ref
+	if gref.generator == null:
+		return
+
+	const CELL  := 2                        # タイル1つ当たりのピクセル数
+	const MW    := DungeonGenerator.MAP_W   # 60
+	const MH    := DungeonGenerator.MAP_H   # 40
+	const PAD   := 8                        # 画面端からの余白
+
+	# 右上に配置
+	var ox := vp.x - MW * CELL - PAD
+	var oy := PAD
+
+	# 背景・枠
+	draw_rect(Rect2(ox - 2, oy - 2, MW * CELL + 4, MH * CELL + 4),
+		Color(0.0, 0.0, 0.0, 0.78))
+	draw_rect(Rect2(ox - 2, oy - 2, MW * CELL + 4, MH * CELL + 4),
+		Color(0.40, 0.40, 0.50, 0.90), false, 1.0)
+
+	# タイル描画（探索済みのみ）
+	for y in MH:
+		for x in MW:
+			var pos := Vector2i(x, y)
+			if not gref.explored.has(pos):
+				continue
+			var tile: int = gref.generator.get_tile(x, y)
+			var visible: bool = gref.fov_visible.has(pos)
+			var col: Color
+			match tile:
+				DungeonGenerator.TILE_WALL:
+					col = Color(0.22, 0.22, 0.28) if not visible else Color(0.35, 0.35, 0.42)
+				DungeonGenerator.TILE_STAIRS:
+					col = Color(0.50, 0.50, 0.10) if not visible else Color(0.90, 0.88, 0.20)
+				_:  # FLOOR
+					col = Color(0.35, 0.35, 0.40) if not visible else Color(0.60, 0.60, 0.65)
+			draw_rect(Rect2(ox + x * CELL, oy + y * CELL, CELL, CELL), col)
+
+	# ゴールド（探索済み・黄色）
+	for pile in gref.gold_piles:
+		var gp: Vector2i = pile["grid_pos"]
+		if gref.explored.has(gp):
+			draw_rect(Rect2(ox + gp.x * CELL, oy + gp.y * CELL, CELL, CELL),
+				Color(1.00, 0.85, 0.00))
+
+	# アイテム（探索済み・淡黄色）
+	for fi in gref.floor_items:
+		var fp: Vector2i = fi["grid_pos"]
+		if gref.explored.has(fp):
+			draw_rect(Rect2(ox + fp.x * CELL, oy + fp.y * CELL, CELL, CELL),
+				Color(0.85, 0.85, 0.20))
+
+	# 視界内の敵（赤）
+	for enemy in gref.enemies:
+		var ep: Vector2i = enemy["grid_pos"]
+		if gref.fov_visible.has(ep):
+			draw_rect(Rect2(ox + ep.x * CELL, oy + ep.y * CELL, CELL, CELL),
+				Color(0.90, 0.18, 0.18))
+
+	# プレイヤー（青・1px大きめ）
+	var pp: Vector2i = gref.p_grid
+	draw_rect(Rect2(ox + pp.x * CELL - 1, oy + pp.y * CELL - 1, CELL + 2, CELL + 2),
+		Color(0.25, 0.60, 1.00))
+
+	# 「M: マップ」ラベル
+	var font := ThemeDB.fallback_font
+	draw_string(font, Vector2(ox, oy + MH * CELL + 10),
+		"[M] マップ切替", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.50, 0.50, 0.55))
 
 func _item_name(item: Dictionary) -> String:
 	if item.is_empty():
@@ -159,7 +248,7 @@ func _draw_inventory(vp: Vector2, storage_mode: bool = false) -> void:
 			var item:  Dictionary = inv[i]
 			var iy := title_y + 36 + i * 26
 			var selected: bool = (i == gref.inv_cursor)
-			# storage_select中、壺自身はグレーアウト
+			# storage_select中、箱自身はグレーアウト
 			var is_pot_self: bool = storage_mode and item.get("_iid", -2) == gref._storage_pot_iid
 			var bg_col := Color(0.20, 0.25, 0.35, 0.85) if selected else Color(0, 0, 0, 0)
 			draw_rect(Rect2(title_x - 8, iy - 18, 500, 24), bg_col)
@@ -171,15 +260,30 @@ func _draw_inventory(vp: Vector2, storage_mode: bool = false) -> void:
 				col = Color.WHITE
 			else:
 				col = ItemData.type_color(item.get("type", 0))
-			# 保存の壺は中身の個数を表示
+			# 保存の箱は中身の個数を表示
 			var name_str: String = item.get("name", "?")
 			if item.get("effect", "") == "storage":
 				var cnt: int = item.get("contents", []).size()
 				name_str = "%s（%d個入り）" % [name_str, cnt]
+			# アイコン描画（20×20）
+			const ICON_SIZE := 20
+			var icon_tex: Texture2D = _icon_cache.get(item.get("type", -1))
+			var icon_drawn := false
+			if icon_tex != null:
+				var icon_mod := Color(0.45, 0.45, 0.45) if is_pot_self else Color.WHITE
+				draw_texture_rect(icon_tex,
+					Rect2(title_x, iy - ICON_SIZE + 4, ICON_SIZE, ICON_SIZE), false, icon_mod)
+				icon_drawn = true
+			if not icon_drawn:
+				# フォールバック：シンボル文字
+				draw_string(font, Vector2(title_x, iy),
+					ItemData.type_symbol(item.get("type", 0)),
+					HORIZONTAL_ALIGNMENT_LEFT, ICON_SIZE, 15, col)
+			# アイテム名（アイコン分右にずらす）
 			draw_string(font,
-				Vector2(title_x, iy),
-				"%s%s %s" % [ItemData.type_symbol(item.get("type", 0)), tag, name_str],
-				HORIZONTAL_ALIGNMENT_LEFT, 490, 15, col)
+				Vector2(title_x + ICON_SIZE + 4, iy),
+				"%s %s" % [tag, name_str],
+				HORIZONTAL_ALIGNMENT_LEFT, 466, 15, col)
 
 	# 操作ガイド
 	var gy := vp.y - BAR_H - 30.0
@@ -198,17 +302,219 @@ func _equip_tag(gref: Node, item: Dictionary) -> String:
 	if gref.p_ring.get("_iid",   -1) == iid: return "[指]"
 	return "    "
 
+# ─── 店UI ────────────────────────────────────────────────
+func _draw_shop(vp: Vector2) -> void:
+	var font  := ThemeDB.fallback_font
+	var g     := game_ref
+
+	const MARGIN    := 8.0
+	const TAB_H     := 26.0   # タブ行の高さ
+	const HEADER_H  := 50.0   # タイトル+タブ+区切り線の高さ
+	const FOOTER_H  := 30.0
+	const ROW_H     := 28.0
+	var pw := minf(440.0, vp.x - MARGIN * 2)
+
+	var is_sell: bool = (g.shop_mode == "sell")
+	var items: Array  = g.shop_items if not is_sell else g.p_inventory
+	var cursor: int   = g.shop_sell_cursor if is_sell else g.shop_cursor
+
+	var available_h := vp.y - BAR_H - MARGIN * 2
+	var max_rows: int = int((available_h - HEADER_H - FOOTER_H) / ROW_H)
+	max_rows = max(1, max_rows)
+	var visible_count: int = min(items.size(), max_rows)
+
+	var scroll_offset: int = 0
+	if items.size() > max_rows:
+		scroll_offset = clamp(cursor - max_rows / 2, 0, items.size() - max_rows)
+
+	var ph := HEADER_H + ROW_H * float(max(1, visible_count)) + FOOTER_H
+	ph = minf(ph, available_h)
+	var px := (vp.x - pw) / 2.0
+	var py := maxf(MARGIN, (vp.y - BAR_H - ph) / 2.0)
+
+	# 暗幕・パネル背景・枠
+	draw_rect(Rect2(0, 0, vp.x, vp.y - BAR_H), Color(0, 0, 0, 0.70))
+	draw_rect(Rect2(px, py, pw, ph), Color(0.06, 0.05, 0.02, 0.97))
+	draw_rect(Rect2(px, py, pw, ph), Color(0.75, 0.65, 0.15), false, 2.0)
+
+	# タイトル行
+	draw_string(font, Vector2(px, py + 28),
+		"＊ 店 ＊", HORIZONTAL_ALIGNMENT_CENTER, int(pw), 22, Color(1.0, 0.88, 0.20))
+	draw_string(font, Vector2(px + 8, py + 28),
+		"所持金: %dG" % g.p_gold, HORIZONTAL_ALIGNMENT_RIGHT, int(pw - 16), 14, Color(1.0, 0.85, 0.1))
+
+	# ── 購入 / 売却 タブ ──────────────────────────────────────
+	var tab_y := py + 34.0
+	var tab_w := pw / 2.0
+	var buy_col:  Color = Color(1.0, 0.90, 0.30) if not is_sell else Color(0.50, 0.45, 0.25)
+	var sell_col: Color = Color(1.0, 0.90, 0.30) if is_sell     else Color(0.50, 0.45, 0.25)
+	if not is_sell:
+		draw_rect(Rect2(px, tab_y, tab_w, TAB_H), Color(0.20, 0.16, 0.04, 0.80))
+	draw_string(font, Vector2(px, tab_y + TAB_H * 0.75),
+		"購入", HORIZONTAL_ALIGNMENT_CENTER, int(tab_w), 14, buy_col)
+	if is_sell:
+		draw_rect(Rect2(px + tab_w, tab_y, tab_w, TAB_H), Color(0.20, 0.16, 0.04, 0.80))
+	draw_string(font, Vector2(px + tab_w, tab_y + TAB_H * 0.75),
+		"売却", HORIZONTAL_ALIGNMENT_CENTER, int(tab_w), 14, sell_col)
+
+	# ヘッダー区切り線
+	var line_y := py + HEADER_H - 10.0
+	draw_line(Vector2(px + 12, line_y), Vector2(px + pw - 12, line_y), Color(0.50, 0.40, 0.10), 1.0)
+
+	# ── アイテムリスト ──────────────────────────────────────
+	if items.is_empty():
+		var empty_msg: String = "売り切れです" if not is_sell else "持ち物がありません"
+		draw_string(font, Vector2(px + pw / 2.0, py + HEADER_H + ROW_H * 0.75),
+			empty_msg, HORIZONTAL_ALIGNMENT_CENTER, -1, 16, Color(0.6, 0.6, 0.6))
+	else:
+		if scroll_offset > 0:
+			draw_string(font, Vector2(px + pw / 2.0, py + HEADER_H - 2),
+				"▲", HORIZONTAL_ALIGNMENT_CENTER, -1, 12, Color(0.70, 0.60, 0.20))
+
+		for row in visible_count:
+			var i: int = row + scroll_offset
+			if i >= items.size():
+				break
+
+			var item_name: String
+			var price: int
+			var type_int: int
+			if not is_sell:
+				var si: Dictionary = items[i]
+				item_name = si["item"].get("name", "？")
+				price     = si["price"]
+				type_int  = si["item"].get("type", -1)
+			else:
+				var inv_item: Dictionary = items[i]
+				item_name = inv_item.get("name", "？")
+				price     = ItemData.sell_price(inv_item)
+				type_int  = inv_item.get("type", -1)
+
+			var row_top := py + HEADER_H + ROW_H * float(row)
+			var iy      := row_top + ROW_H * 0.75
+
+			# カーソル行ハイライト
+			if i == cursor:
+				draw_rect(Rect2(px + 4, row_top, pw - 8, ROW_H - 2),
+					Color(0.55, 0.45, 0.05, 0.45))
+				draw_string(font, Vector2(px + 16, iy), "▶",
+					HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(1.0, 0.90, 0.3))
+
+			# アイコン
+			var icon: Texture2D = _icon_cache.get(type_int)
+			if icon:
+				draw_texture_rect(icon, Rect2(px + 30, row_top + 4, 20, 20), false)
+
+			# アイテム名
+			draw_string(font, Vector2(px + 56, iy), item_name,
+				HORIZONTAL_ALIGNMENT_LEFT, int(pw - 56 - 70), 15, Color(0.95, 0.92, 0.80))
+			# 価格（売却時は緑系で表示）
+			var price_col: Color
+			if not is_sell:
+				price_col = Color(1.0, 0.85, 0.1) if g.p_gold >= price else Color(0.7, 0.3, 0.3)
+			else:
+				price_col = Color(0.40, 0.90, 0.40)
+			draw_string(font, Vector2(px + 8, iy), "%dG" % price,
+				HORIZONTAL_ALIGNMENT_RIGHT, int(pw - 16), 15, price_col)
+
+		if scroll_offset + max_rows < items.size():
+			var ind_y := py + HEADER_H + ROW_H * float(visible_count) - 4.0
+			draw_string(font, Vector2(px + pw / 2.0, ind_y),
+				"▼", HORIZONTAL_ALIGNMENT_CENTER, -1, 12, Color(0.70, 0.60, 0.20))
+
+	# フッター
+	var footer_y := py + ph - 14.0
+	draw_line(Vector2(px + 12, footer_y - 12), Vector2(px + pw - 12, footer_y - 12),
+		Color(0.50, 0.40, 0.10), 1.0)
+	var footer_text: String
+	if not is_sell:
+		footer_text = "↑↓ 選択   Enter/Z 購入   Tab 売却へ   Esc 閉じる"
+	else:
+		footer_text = "↑↓ 選択   Enter/Z 売却   Tab 購入へ   Esc 閉じる"
+	draw_string(font, Vector2(px, footer_y),
+		footer_text, HORIZONTAL_ALIGNMENT_CENTER, int(pw), 13, Color(0.55, 0.55, 0.55))
+
 # ─── ゲームオーバー ───────────────────────────────────────
 func _draw_game_over(vp: Vector2) -> void:
-	var font := ThemeDB.fallback_font
-	draw_rect(Rect2(0, 0, vp.x, vp.y - BAR_H), Color(0, 0, 0, 0.88))
-	draw_string(font, Vector2(vp.x / 2 - 110, vp.y / 2 - 50),
-		"あなたは倒れた…", HORIZONTAL_ALIGNMENT_LEFT, -1, 32, Color(0.85, 0.15, 0.15))
-	draw_string(font, Vector2(vp.x / 2 - 150, vp.y / 2),
-		"B%dF  LV%d  Turn%d" % [game_ref.current_floor, game_ref.p_level, game_ref.turn_count],
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color(0.75, 0.75, 0.75))
-	draw_string(font, Vector2(vp.x / 2 - 100, vp.y / 2 + 50),
-		"[R] でリスタート", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color(0.75, 0.75, 0.75))
+	var font  := ThemeDB.fallback_font
+	var g     := game_ref
+
+	# 暗幕
+	draw_rect(Rect2(0, 0, vp.x, vp.y - BAR_H), Color(0, 0, 0, 0.90))
+
+	# パネル
+	var pw    := 480.0
+	var ph    := 320.0
+	var px    := (vp.x - pw) / 2.0
+	var py    := (vp.y - BAR_H - ph) / 2.0
+	draw_rect(Rect2(px, py, pw, ph), Color(0.08, 0.04, 0.04, 0.97))
+	draw_rect(Rect2(px, py, pw, ph), Color(0.60, 0.15, 0.10), false, 2.0)
+
+	# タイトル
+	var cy := py + 36.0
+	draw_string(font, Vector2(px + pw / 2, cy),
+		"GAME  OVER", HORIZONTAL_ALIGNMENT_CENTER, -1, 34, Color(0.90, 0.15, 0.10))
+
+	# 死因
+	cy += 44.0
+	var cause_text: String = g.death_cause if g.death_cause != "" else "力尽きた"
+	draw_string(font, Vector2(px + pw / 2, cy),
+		"─  %s  ─" % cause_text, HORIZONTAL_ALIGNMENT_CENTER, -1, 17, Color(0.85, 0.65, 0.35))
+
+	# 区切り線
+	cy += 18.0
+	draw_line(Vector2(px + 24, cy), Vector2(px + pw - 24, cy), Color(0.40, 0.20, 0.18), 1.0)
+
+	# ── ステータス表 ──────────────────────────────────────
+	cy += 22.0
+	var lx := px + 40.0
+	var rx := px + pw / 2 + 20.0
+	var row_h := 22.0
+	var label_col := Color(0.60, 0.60, 0.65)
+	var value_col := Color(0.95, 0.95, 0.90)
+
+	# 左列
+	draw_string(font, Vector2(lx, cy),       "フロア",   HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
+	draw_string(font, Vector2(lx + 80, cy),  "B%dF" % g.current_floor, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
+	cy += row_h
+	draw_string(font, Vector2(lx, cy),       "レベル",   HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
+	draw_string(font, Vector2(lx + 80, cy),  "LV %d" % g.p_level, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
+	cy += row_h
+	draw_string(font, Vector2(lx, cy),       "HP",       HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
+	draw_string(font, Vector2(lx + 80, cy),  "%d / %d" % [g.p_hp, g.p_hp_max], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
+	cy += row_h
+	draw_string(font, Vector2(lx, cy),       "攻撃力",   HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
+	draw_string(font, Vector2(lx + 80, cy),  "%d" % g.calc_atk(), HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
+	cy += row_h
+	draw_string(font, Vector2(lx, cy),       "防御力",   HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
+	draw_string(font, Vector2(lx + 80, cy),  "%d" % g.calc_def(), HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
+
+	# 右列（cy をリセット）
+	cy = py + 36.0 + 44.0 + 18.0 + 22.0
+	draw_string(font, Vector2(rx, cy),       "所持金",   HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
+	draw_string(font, Vector2(rx + 80, cy),  "%d G" % g.p_gold, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(1.00, 0.88, 0.15))
+	cy += row_h
+	draw_string(font, Vector2(rx, cy),       "満腹度",   HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
+	draw_string(font, Vector2(rx + 80, cy),  "%d%%" % g.p_fullness, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
+	cy += row_h
+	draw_string(font, Vector2(rx, cy),       "ターン数", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
+	draw_string(font, Vector2(rx + 80, cy),  "%d" % g.turn_count, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
+	cy += row_h
+	# 経過時間
+	var elapsed_sec := int((Time.get_ticks_msec() - g._start_time_msec) / 1000)
+	var el_m := elapsed_sec / 60
+	var el_s := elapsed_sec % 60
+	draw_string(font, Vector2(rx, cy),       "経過時間", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
+	draw_string(font, Vector2(rx + 80, cy),  "%d:%02d" % [el_m, el_s], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
+	cy += row_h
+	draw_string(font, Vector2(rx, cy),       "経験値",   HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
+	draw_string(font, Vector2(rx + 80, cy),  "%d" % g.p_exp, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
+
+	# リスタート案内
+	var bottom_y := py + ph - 28.0
+	draw_line(Vector2(px + 24, bottom_y - 14), Vector2(px + pw - 24, bottom_y - 14), Color(0.40, 0.20, 0.18), 1.0)
+	draw_string(font, Vector2(px + pw / 2, bottom_y),
+		"[R] でリスタート", HORIZONTAL_ALIGNMENT_CENTER, -1, 15, Color(0.60, 0.60, 0.65))
 
 # ─── 勝利 ─────────────────────────────────────────────────
 func _draw_victory(vp: Vector2) -> void:

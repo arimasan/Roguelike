@@ -9,9 +9,10 @@ var generator:      DungeonGenerator = null
 var visible_tiles:  Dictionary       = {}
 var explored_tiles: Dictionary       = {}
 
-var _tex_floor:  Texture2D = null
-var _tex_wall:   Texture2D = null
-var _tex_stairs: Texture2D = null
+var _tex_floor:   Texture2D = null
+var _tex_wall:    Texture2D = null
+var _tex_stairs:  Texture2D = null
+var _tex_carpet:  Texture2D = null
 
 # フォールバック用カラー定数
 const C_VIS_WALL   := Color(0.22, 0.24, 0.30)
@@ -34,6 +35,8 @@ func setup(gen: DungeonGenerator, vis: Dictionary, exp: Dictionary) -> void:
 		_tex_wall   = load(Assets.TILE_WALL) as Texture2D
 	if ResourceLoader.exists(Assets.TILE_STAIRS):
 		_tex_stairs = load(Assets.TILE_STAIRS) as Texture2D
+	if ResourceLoader.exists(Assets.SHOP_CARPET):
+		_tex_carpet = load(Assets.SHOP_CARPET) as Texture2D
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	queue_redraw()
 
@@ -83,6 +86,13 @@ func _draw_tile_visible(rect: Rect2, tile: int, font: Font, font_size: int) -> v
 				draw_rect(rect, C_VIS_FLOOR)
 				_draw_char(font, rect, ">", Color(0.95, 0.85, 0.10), font_size)
 
+		DungeonGenerator.TILE_SHOP_FLOOR:
+			if _tex_carpet:
+				draw_texture_rect(_tex_carpet, rect, false)
+			else:
+				draw_rect(rect, Color(0.55, 0.10, 0.10))
+				_draw_char(font, rect, ".", Color(0.85, 0.30, 0.30), font_size)
+
 # ─── 探索済み（視界外）タイル描画 ────────────────────────────
 func _draw_tile_explored(rect: Rect2, tile: int) -> void:
 	match tile:
@@ -91,6 +101,11 @@ func _draw_tile_explored(rect: Rect2, tile: int) -> void:
 				draw_texture_rect(_tex_wall, rect, false, DIM_COLOR)
 			else:
 				draw_rect(rect, C_EXP_WALL)
+		DungeonGenerator.TILE_SHOP_FLOOR:
+			if _tex_carpet:
+				draw_texture_rect(_tex_carpet, rect, false, DIM_COLOR)
+			else:
+				draw_rect(rect, Color(0.22, 0.04, 0.04))
 		_:
 			if _tex_floor:
 				draw_texture_rect(_tex_floor, rect, false, DIM_COLOR)

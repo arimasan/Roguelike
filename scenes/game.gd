@@ -33,7 +33,8 @@ var p_shield:   Dictionary = {}
 var p_ring:     Dictionary = {}
 var p_inventory: Array = []
 var p_gold:      int   = 0
-var p_blind_turns: int = 0   # 盲目ターン残数（0=通常視界）
+var p_blind_turns: int  = 0    # 盲目ターン残数（0=通常視界）
+var _regen_accum: float = 0.0  # 自然回復の積み立て（整数になった分だけ回復）
 
 # ─── エンティティ ─────────────────────────────────────────
 # enemies: Array of { "data": dict, "hp": int, "grid_pos": V2i,
@@ -54,12 +55,31 @@ var inv_cursor: int = 0
 # インベントリに入る際に採番。同名アイテムを個別に識別するために使用。
 var _next_iid: int = 0
 
-# ─── 保存の壺 ─────────────────────────────────────────────
-var _storage_pot_iid: int = -1   # storage_select 中の壺の _iid
+# ─── 保存の箱 ─────────────────────────────────────────────
+var _storage_pot_iid: int = -1   # storage_select 中の箱の _iid
 
 # ─── ズーム ───────────────────────────────────────────────
 const ZOOM_LEVELS: Array[float] = [1.0, 2.0, 4.0]
 var _zoom_index: int = 1   # デフォルト x2
+
+# ─── ミニマップ ───────────────────────────────────────────
+var show_minimap: bool = true   # M キーでトグル
+
+# ─── 店 ───────────────────────────────────────────────────
+# shop_items: Array of { "item": dict, "price": int, "grid_pos": V2i, "node": Node2D }
+var shop_items:       Array      = []
+var _shopkeeper:      Dictionary = {}   # { "grid_pos": V2i, "node": Node2D }
+var shop_cursor:      int        = 0
+var shop_mode:        String     = "buy"   # "buy" or "sell"
+var shop_sell_cursor: int        = 0
+var _shop_entered:    bool       = false   # 入店メッセージ表示済みフラグ
+
+# ─── セーブ ───────────────────────────────────────────────
+const SAVE_PATH := "user://save.json"
+
+# ─── リザルト ─────────────────────────────────────────────
+var death_cause:     String = ""   # ゲームオーバー時の死因テキスト
+var _start_time_msec: int   = 0    # ゲーム開始時刻（msec）
 
 # ─── ノード参照 ───────────────────────────────────────────
 var _map_drawer    = null   # map_drawer.gd スクリプト付き Node2D
@@ -74,9 +94,9 @@ var _lbl_bgm_pct:    Label = null
 var _lbl_se_pct:     Label = null
 
 # ─── 音量設定 ────────────────────────────────────────────
-var vol_master: float = 1.0
-var vol_bgm:    float = 0.5   # デフォルト 50%
-var vol_se:     float = 1.0
+var vol_master: float = 0.0   # デバッグ用 0%
+var vol_bgm:    float = 0.0   # デバッグ用 0%
+var vol_se:     float = 0.0   # デバッグ用 0%
 
 # ─── キーコンフィグ ──────────────────────────────────────
 const KEY_ACTIONS: Dictionary = {
@@ -85,10 +105,9 @@ const KEY_ACTIONS: Dictionary = {
 	"move_left":  {"label": "左移動",             "default": KEY_LEFT},
 	"move_right": {"label": "右移動",             "default": KEY_RIGHT},
 	"diag_mod":   {"label": "斜め移動モディファイア", "default": KEY_SHIFT},
-	"wait":       {"label": "待機",               "default": KEY_KP_5},
+	"wait":       {"label": "待機/階段を降りる",   "default": KEY_SPACE},
 	"inventory":  {"label": "インベントリ",        "default": KEY_I},
 	"pickup":     {"label": "拾う",               "default": KEY_G},
-	"descend":    {"label": "階段を降りる",        "default": KEY_SPACE},
 	"zoom_in":    {"label": "ズームイン",          "default": KEY_EQUAL},
 	"zoom_out":   {"label": "ズームアウト",        "default": KEY_MINUS},
 }
@@ -117,10 +136,22 @@ const SE := {
 
 # ─── 初期化 ───────────────────────────────────────────────
 func _ready() -> void:
+	_start_time_msec = Time.get_ticks_msec()
+	get_tree().set_auto_accept_quit(false)   # 手動でquit処理してセーブする
 	for action: String in KEY_ACTIONS:
 		key_bindings[action] = KEY_ACTIONS[action]["default"]
 	_build_scene_nodes()
-	_start_new_floor()
+	if has_save():
+		if not load_game():
+			_start_new_floor()   # 読み込み失敗時は新規
+	else:
+		_start_new_floor()
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		if game_state in ["playing", "inventory", "storage_select", "shop"]:
+			save_game()
+		get_tree().quit()
 
 func _build_scene_nodes() -> void:
 	# マップ描画レイヤー
@@ -165,6 +196,9 @@ func _start_new_floor() -> void:
 	enemies.clear()
 	floor_items.clear()
 	gold_piles.clear()
+	shop_items.clear()
+	_shopkeeper    = {}
+	_shop_entered  = false
 	explored.clear()
 	fov_visible.clear()
 
@@ -177,6 +211,7 @@ func _start_new_floor() -> void:
 
 	# プレイヤーノード生成
 	_player_node = _make_tile_node("@", Color(0.10, 0.28, 0.80))
+	_player_node.z_index = 1
 	_entity_layer.add_child(_player_node)
 	p_grid = generator.player_start
 	_player_node.call("set_grid", p_grid.x, p_grid.y)
@@ -186,6 +221,8 @@ func _start_new_floor() -> void:
 	_spawn_enemies()
 	_spawn_items()
 	_spawn_gold()
+	if generator.has_shop:
+		_setup_shop()
 
 	# FOV更新・カメラ・HUD
 	_update_fov()
@@ -207,6 +244,7 @@ func _spawn_enemies() -> void:
 			continue
 		var data: Dictionary = pool[randi() % pool.size()].duplicate(true)
 		var node := _make_tile_node(data["symbol"], data["color"])
+		node.z_index = 1
 		_entity_layer.add_child(node)
 		node.call("set_grid", spawn_pos.x, spawn_pos.y)
 		node.call("set_sprite", Assets.enemy_sprite(data.get("id", "")))
@@ -254,6 +292,167 @@ func _place_gold_pile(amount: int, pos: Vector2i) -> void:
 	node.call("set_sprite", "res://assets/sprites/items/gold.png")
 	gold_piles.append({"amount": amount, "grid_pos": pos, "node": node})
 
+# ─── 店セットアップ ───────────────────────────────────────
+func _setup_shop() -> void:
+	# 店員ノード
+	var sk_node := _make_tile_node("店", Color(0.15, 0.10, 0.05), Color(1.0, 0.85, 0.1), 14)
+	sk_node.z_index = 1
+	_entity_layer.add_child(sk_node)
+	sk_node.call("set_grid", generator.shop_keeper_pos.x, generator.shop_keeper_pos.y)
+	sk_node.call("set_sprite", Assets.SHOP_KEEPER)
+	_shopkeeper = {"grid_pos": generator.shop_keeper_pos, "node": sk_node}
+
+	# 店アイテム（最大9個）
+	for pos in generator.shop_item_positions:
+		var item: Dictionary = ItemData.random_item(current_floor)
+		item["_iid"] = _next_iid
+		_next_iid += 1
+		var price: int  = ItemData.shop_price(item)
+		var sym: String = ItemData.type_symbol(item.get("type", 0))
+		var col: Color  = ItemData.type_color(item.get("type", 0))
+		var node := _make_tile_node(sym, Color(0.15, 0.10, 0.05), col, 18)
+		_entity_layer.add_child(node)
+		node.call("set_grid", pos.x, pos.y)
+		node.call("set_sprite", Assets.item_type_sprite(item.get("type", 0)))
+		shop_items.append({"item": item, "price": price, "grid_pos": pos, "node": node})
+
+func _open_shop() -> void:
+	shop_cursor      = 0
+	shop_mode        = "buy"
+	shop_sell_cursor = 0
+	# Method1: カーペット上に置かれた floor_items を shop_items に変換
+	_convert_carpet_drops_to_shop_items()
+	game_state = "shop"
+	_refresh_hud()
+
+## カーペットタイル上の floor_items を売却商品として shop_items に移す
+func _convert_carpet_drops_to_shop_items() -> void:
+	var converted: Array = []
+	for fi: Dictionary in floor_items:
+		var pos: Vector2i = fi["grid_pos"] as Vector2i
+		if generator.get_tile(pos.x, pos.y) == DungeonGenerator.TILE_SHOP_FLOOR:
+			converted.append(fi)
+	for fi: Dictionary in converted:
+		floor_items.erase(fi)
+		var price: int = ItemData.sell_price(fi["item"])
+		shop_items.append({
+			"item":     fi["item"],
+			"price":    price,
+			"grid_pos": fi["grid_pos"],
+			"node":     fi["node"],
+		})
+		add_message("%s を引き取った。（買取 %dG）" % [fi["item"].get("name", "?"), price])
+
+## 空いているカーペットタイルを返す。なければ Vector2i(-1,-1)
+func _find_free_carpet_tile() -> Vector2i:
+	if not generator.has_shop:
+		return Vector2i(-1, -1)
+	var occupied: Array = [p_grid, _shopkeeper.get("grid_pos", Vector2i(-1, -1))]
+	for si: Dictionary in shop_items:
+		occupied.append(si["grid_pos"] as Vector2i)
+	for fi: Dictionary in floor_items:
+		occupied.append(fi["grid_pos"] as Vector2i)
+	var shop_room: Rect2i = generator.shop_room
+	for y in range(shop_room.position.y, shop_room.end.y):
+		for x in range(shop_room.position.x, shop_room.end.x):
+			if generator.get_tile(x, y) != DungeonGenerator.TILE_SHOP_FLOOR:
+				continue
+			var pos := Vector2i(x, y)
+			if pos not in occupied:
+				return pos
+	return Vector2i(-1, -1)
+
+## インベントリの index のアイテムを売却（カーペット上に商品として置く）
+func _try_sell(index: int) -> void:
+	if index < 0 or index >= p_inventory.size():
+		return
+	var item: Dictionary = p_inventory[index]
+	var carpet := _find_free_carpet_tile()
+	if carpet == Vector2i(-1, -1):
+		add_message("置けるカーペットの空きがない。")
+		return
+	var price: int = ItemData.sell_price(item)
+	# 装備中なら外す
+	if p_weapon.get("_iid", -1) == item.get("_iid", -2) and not item.get("cursed", false):
+		p_weapon = {}
+	if p_shield.get("_iid", -1) == item.get("_iid", -2):
+		p_shield = {}
+	if p_ring.get("_iid", -1) == item.get("_iid", -2):
+		p_ring = {}
+	# ノードを作成して床に置く（shop_item として登録）
+	var sym := ItemData.type_symbol(item.get("type", 0))
+	var col := ItemData.type_color(item.get("type", 0))
+	var node := _make_tile_node(sym, Color(0.15, 0.10, 0.05), col, 18)
+	_entity_layer.add_child(node)
+	node.call("set_grid", carpet.x, carpet.y)
+	node.call("set_sprite", Assets.item_type_sprite(item.get("type", 0)))
+	shop_items.append({"item": item, "price": price, "grid_pos": carpet, "node": node})
+	p_inventory.remove_at(index)
+	shop_sell_cursor = min(shop_sell_cursor, max(0, p_inventory.size() - 1))
+	add_message("%s を %dG で売りに出した。" % [item.get("name", "?"), price])
+	_play_se("coin")
+	_refresh_hud()
+
+func _handle_shop_input(kc: int) -> void:
+	match kc:
+		KEY_ESCAPE, KEY_I:
+			game_state = "playing"
+			_refresh_hud()
+		KEY_TAB:
+			# 購入 / 売却 タブ切り替え
+			shop_mode = "sell" if shop_mode == "buy" else "buy"
+			shop_cursor      = clamp(shop_cursor,      0, max(0, shop_items.size()    - 1))
+			shop_sell_cursor = clamp(shop_sell_cursor, 0, max(0, p_inventory.size()   - 1))
+			_refresh_hud()
+		KEY_UP, KEY_K:
+			if shop_mode == "buy":
+				if shop_items.size() > 0:
+					shop_cursor = max(0, shop_cursor - 1)
+					_refresh_hud()
+			else:
+				if p_inventory.size() > 0:
+					shop_sell_cursor = max(0, shop_sell_cursor - 1)
+					_refresh_hud()
+		KEY_DOWN, KEY_J:
+			if shop_mode == "buy":
+				if shop_items.size() > 0:
+					shop_cursor = min(shop_items.size() - 1, shop_cursor + 1)
+					_refresh_hud()
+			else:
+				if p_inventory.size() > 0:
+					shop_sell_cursor = min(p_inventory.size() - 1, shop_sell_cursor + 1)
+					_refresh_hud()
+		KEY_ENTER, KEY_Z, KEY_KP_ENTER:
+			if shop_mode == "buy":
+				if shop_items.size() > 0:
+					_try_buy(shop_cursor)
+			else:
+				_try_sell(shop_sell_cursor)
+
+func _try_buy(index: int) -> void:
+	if index < 0 or index >= shop_items.size():
+		return
+	var si: Dictionary = shop_items[index]
+	var price: int     = si["price"]
+	if p_gold < price:
+		add_message("所持金が足りない。（%dG 必要 / 所持 %dG）" % [price, p_gold])
+		return
+	if p_inventory.size() >= MAX_INVENTORY:
+		add_message("持ち物がいっぱいで買えない。")
+		return
+	p_gold -= price
+	var item: Dictionary = si["item"].duplicate(true)
+	p_inventory.append(item)
+	si["node"].queue_free()
+	shop_items.remove_at(index)
+	shop_cursor = min(shop_cursor, max(0, shop_items.size() - 1))
+	add_message("%s を %dG で購入した。（残金: %dG）" % [item.get("name", "?"), price, p_gold])
+	_play_se("coin")
+	if game_state == "shop":
+		_refresh_hud()
+	else:
+		_end_player_turn()
+
 func _place_floor_item(item: Dictionary, pos: Vector2i) -> void:
 	var sym := ItemData.type_symbol(item.get("type", 0))
 	var col := ItemData.type_color(item.get("type", 0))
@@ -294,14 +493,17 @@ func _unhandled_input(event: InputEvent) -> void:
 			if kc == KEY_ESCAPE:
 				_open_options()
 				return
-			if kc == key_bindings.get("descend", KEY_SLASH):
-				_try_descend()
+			if kc == KEY_M:
+				show_minimap = not show_minimap
+				_refresh_hud()
 				return
 			_handle_play_input(kc)
 		"inventory":
 			_handle_inv_input(kc)
 		"storage_select":
 			_handle_storage_input(kc)
+		"shop":
+			_handle_shop_input(kc)
 		"options":
 			if kc == KEY_ESCAPE:
 				_close_options()
@@ -335,7 +537,7 @@ func _handle_play_input(kc: int) -> void:
 	elif kc == key_bindings.get("move_right", KEY_RIGHT): _try_player_move(Vector2i( 1,  0))
 	elif kc == key_bindings.get("move_up",    KEY_UP):    _try_player_move(Vector2i( 0, -1))
 	elif kc == key_bindings.get("move_down",  KEY_DOWN):  _try_player_move(Vector2i( 0,  1))
-	elif kc == key_bindings.get("wait",       KEY_KP_5):  _player_wait()
+	elif kc == key_bindings.get("wait",       KEY_SPACE): _player_wait_or_descend()
 	elif kc == key_bindings.get("inventory",  KEY_I):     _open_inventory()
 	elif kc == key_bindings.get("pickup",     KEY_G):     _try_pickup()
 
@@ -364,23 +566,40 @@ func _try_player_move(dir: Vector2i) -> void:
 		_player_attack(target_enemy)
 		_end_player_turn()
 		return
+	# 店員への移動 → 店を開く
+	if not _shopkeeper.is_empty() and _shopkeeper["grid_pos"] == new_pos:
+		_open_shop()
+		return
 	# 壁チェック
 	if not generator.is_walkable(new_pos.x, new_pos.y):
 		return
 	# 移動
 	p_grid = new_pos
 	_player_node.call("set_grid", p_grid.x, p_grid.y)
+	# 入店チェック（初回のみメッセージ）
+	if generator.has_shop and not _shop_entered and generator.shop_room.has_point(p_grid):
+		_shop_entered = true
+		add_message("いらっしゃいませ！店員に話しかけると購入・売却ができます。カーペットに置いてから話しかけても売れます。")
+	# 店アイテム踏んだ時：名前と価格を表示
+	for si in shop_items:
+		if si["grid_pos"] == p_grid:
+			var pickup_key := OS.get_keycode_string(key_bindings.get("pickup", KEY_G))
+			add_message("【%s】  %dG  [%s] で購入" % [si["item"].get("name", "?"), si["price"], pickup_key])
+			break
 	# アイテム自動拾い
 	_auto_pickup()
 	# 階段チェック
 	if generator.get_tile(p_grid.x, p_grid.y) == DungeonGenerator.TILE_STAIRS:
-		var descend_key := OS.get_keycode_string(key_bindings.get("descend", KEY_SPACE))
+		var descend_key := OS.get_keycode_string(key_bindings.get("wait", KEY_SPACE))
 		add_message("階段を見つけた！ [%s] で降りる" % descend_key)
 	_end_player_turn()
 
-func _player_wait() -> void:
-	add_message("その場で待機した。")
-	_end_player_turn()
+func _player_wait_or_descend() -> void:
+	if generator.get_tile(p_grid.x, p_grid.y) == DungeonGenerator.TILE_STAIRS:
+		_try_descend()
+	else:
+		add_message("その場で待機した。")
+		_end_player_turn()
 
 func _try_descend() -> void:
 	if generator.get_tile(p_grid.x, p_grid.y) != DungeonGenerator.TILE_STAIRS:
@@ -391,9 +610,15 @@ func _try_descend() -> void:
 		return
 	_play_se("stairs")
 	current_floor += 1
+	save_game()
 	_start_new_floor()
 
 func _try_pickup() -> void:
+	# 店アイテムが足元にあれば購入
+	for i in shop_items.size():
+		if shop_items[i]["grid_pos"] == p_grid:
+			_try_buy(i)
+			return
 	var fi = _item_at(p_grid)
 	if fi == null:
 		add_message("ここにアイテムはない。")
@@ -441,6 +666,13 @@ func _end_player_turn() -> void:
 			_apply_damage_to_player(3, "空腹")
 		elif p_fullness <= 10:
 			add_message("お腹が減って苦しい…")
+	# 自然回復（200ターンで最大HP分を回復。小数積み立て）
+	if p_hp > 0 and p_hp < p_hp_max:
+		_regen_accum += float(p_hp_max) / 200.0
+		var regen_int := int(_regen_accum)
+		if regen_int >= 1:
+			p_hp = min(p_hp_max, p_hp + regen_int)
+			_regen_accum -= float(regen_int)
 	# 回復指輪
 	if p_ring.get("effect", "") == "regen" and turn_count % 5 == 0:
 		p_hp = min(p_hp_max, p_hp + 1)
@@ -449,6 +681,9 @@ func _end_player_turn() -> void:
 		p_blind_turns -= 1
 		if p_blind_turns == 0:
 			add_message("目が見えるようになった。")
+	# 敵の追加スポーン（50ターンに1体、視界外）
+	if turn_count % 50 == 0:
+		_spawn_wandering_enemy()
 	_enemy_turns()
 	_update_fov()
 	_sync_entity_visibility()
@@ -503,7 +738,16 @@ func _apply_damage_to_player(dmg: int, source: String) -> void:
 		add_message("%s から %d ダメージ！" % [source, dmg])
 	if p_hp <= 0:
 		p_hp = 0
-		_trigger_game_over()
+		var cause: String
+		if source == "空腹":
+			cause = "餓死"
+		elif source == "爆発の本":
+			cause = "爆発の本で自滅"
+		elif source != "":
+			cause = "%s に倒された" % source
+		else:
+			cause = "力尽きた"
+		_trigger_game_over(cause)
 
 # ─── 敵ターン ─────────────────────────────────────────────
 func _enemy_turns() -> void:
@@ -709,7 +953,7 @@ func _apply_item(item: Dictionary) -> bool:
 
 func _apply_scroll(item: Dictionary) -> void:
 	var effect: String = item.get("effect", "")
-	add_message("巻物を読んだ！（%s）" % item.get("name","?"))
+	add_message("本を読んだ！（%s）" % item.get("name","?"))
 	match effect:
 		"identify":
 			add_message("すべてのアイテムを識別した。（効果なし）")
@@ -727,7 +971,7 @@ func _apply_scroll(item: Dictionary) -> void:
 					add_message("%s に %d ダメージ！" % [enemy["data"]["name"], dmg])
 					if enemy["hp"] <= 0:
 						_kill_enemy(enemy)
-			_apply_damage_to_player(randi_range(3, 8), "爆発の巻物")
+			_apply_damage_to_player(randi_range(3, 8), "爆発の本")
 		"uncurse":
 			if p_weapon.get("cursed", false):
 				p_weapon["cursed"] = false
@@ -750,6 +994,34 @@ func _apply_scroll(item: Dictionary) -> void:
 			_spawn_one_enemy_near_player()
 			add_message("モンスターが現れた！")
 
+## ターン経過による追加スポーン（視界外のランダム位置に1体）
+func _spawn_wandering_enemy() -> void:
+	var pool := EnemyData.for_floor(current_floor)
+	if pool.is_empty():
+		return
+	# 視界外・プレイヤー位置・既存敵と重複しない位置を探す（最大10回）
+	var occupied: Array = [p_grid]
+	for e in enemies:
+		occupied.append(e["grid_pos"] as Vector2i)
+	for _attempt in 10:
+		var pos := generator.random_floor_pos()
+		if pos in occupied:
+			continue
+		if fov_visible.has(pos):
+			continue
+		var data: Dictionary = pool[randi() % pool.size()].duplicate(true)
+		var node := _make_tile_node(data["symbol"], data["color"])
+		node.z_index = 1
+		_entity_layer.add_child(node)
+		node.call("set_grid", pos.x, pos.y)
+		node.call("set_sprite", Assets.enemy_sprite(data.get("id", "")))
+		enemies.append({
+			"data": data, "hp": data["hp"],
+			"grid_pos": pos, "node": node,
+			"asleep": false, "alerted": false,
+		})
+		return   # 1体沸いたら終了
+
 func _spawn_one_enemy_near_player() -> void:
 	var pool := EnemyData.for_floor(current_floor)
 	if pool.is_empty():
@@ -757,6 +1029,7 @@ func _spawn_one_enemy_near_player() -> void:
 	var pos := generator.random_floor_pos()
 	var data: Dictionary = pool[randi() % pool.size()].duplicate(true)
 	var node := _make_tile_node(data["symbol"], data["color"])
+	node.z_index = 1
 	_entity_layer.add_child(node)
 	node.call("set_grid", pos.x, pos.y)
 	enemies.append({
@@ -767,7 +1040,7 @@ func _spawn_one_enemy_near_player() -> void:
 
 func _apply_pot(item: Dictionary) -> void:
 	var effect: String = item.get("effect", "")
-	add_message("壺を使った！（%s）" % item.get("name","?"))
+	add_message("箱を使った！（%s）" % item.get("name","?"))
 	match effect:
 		"heal":
 			var heal := randi_range(15, 30)
@@ -790,11 +1063,11 @@ func _apply_pot(item: Dictionary) -> void:
 			p_blind_turns = 10
 			add_message("目の前が真っ暗になった！（10ターン視界1）")
 
-## 保存の壺：中身があれば取り出し、空ならしまうモードへ移行
+## 保存の箱：中身があれば取り出し、空ならしまうモードへ移行
 func _apply_pot_storage(item: Dictionary) -> bool:
 	var contents: Array = item.get("contents", [])
 	if not contents.is_empty():
-		add_message("壺からアイテムを取り出した！")
+		add_message("箱からアイテムを取り出した！")
 		for stored in contents:
 			if p_inventory.size() < MAX_INVENTORY:
 				p_inventory.append(stored)
@@ -802,15 +1075,15 @@ func _apply_pot_storage(item: Dictionary) -> bool:
 			else:
 				_place_floor_item(stored, p_grid)
 				add_message("  %s は荷物がいっぱいで床に落ちた。" % stored.get("name", "?"))
-		return true   # 壺を消費
-	# 空壺：しまう操作モードへ
+		return true   # 箱を消費
+	# 空箱：しまう操作モードへ
 	_storage_pot_iid = item.get("_iid", -1)
 	game_state = "storage_select"
 	add_message("何をしまいますか？ [Enter/Z] しまう  [Esc] キャンセル")
 	_refresh_hud()
 	return false   # インベントリに残す
 
-## 保存の壺しまうモードの入力処理
+## 保存の箱しまうモードの入力処理
 func _handle_storage_input(kc: int) -> void:
 	match kc:
 		KEY_ESCAPE:
@@ -831,12 +1104,12 @@ func _handle_storage_input(kc: int) -> void:
 		_:
 			return
 
-	# 選択アイテムを壺に入れる
+	# 選択アイテムを箱に入れる
 	inv_cursor = clamp(inv_cursor, 0, p_inventory.size() - 1)
 	var target_item: Dictionary = p_inventory[inv_cursor]
-	# 壺自身は入れられない
+	# 箱自身は入れられない
 	if target_item.get("_iid", -2) == _storage_pot_iid:
-		add_message("壺に壺は入れられない。")
+		add_message("箱に箱は入れられない。")
 		return
 	# 装備中は入れられない
 	if p_weapon.get("_iid", -1) == target_item.get("_iid", -2) \
@@ -844,7 +1117,7 @@ func _handle_storage_input(kc: int) -> void:
 			or p_ring.get("_iid",   -1) == target_item.get("_iid", -2):
 		add_message("装備中のアイテムはしまえない。")
 		return
-	# 壺を探してcontentsに追加
+	# 箱を探してcontentsに追加
 	for pot in p_inventory:
 		if pot.get("_iid", -1) == _storage_pot_iid:
 			if not pot.has("contents"):
@@ -852,7 +1125,7 @@ func _handle_storage_input(kc: int) -> void:
 			pot["contents"].append(target_item)
 			p_inventory.remove_at(inv_cursor)
 			inv_cursor = min(inv_cursor, p_inventory.size() - 1)
-			add_message("%s を壺にしまった。" % target_item.get("name", "?"))
+			add_message("%s を箱にしまった。" % target_item.get("name", "?"))
 			break
 	game_state = "playing"
 	_end_player_turn()
@@ -954,11 +1227,41 @@ func _knockback_enemy(enemy: Dictionary, steps: int) -> void:
 		enemy["grid_pos"] = np
 		enemy["node"].call("set_grid", np.x, np.y)
 
+## アイテムが置かれていない最寄りの床タイルを返す（見つからなければ Vector2i(-1,-1)）
+func _find_free_drop_pos(origin: Vector2i) -> Vector2i:
+	var occupied: Array = []
+	for fi in floor_items:
+		occupied.append(fi["grid_pos"] as Vector2i)
+	for si in shop_items:
+		occupied.append(si["grid_pos"] as Vector2i)
+
+	# 足元 → 8近傍の順で探す
+	var candidates: Array = [origin]
+	for dy in [-1, 0, 1]:
+		for dx in [-1, 0, 1]:
+			if dx == 0 and dy == 0:
+				continue
+			candidates.append(origin + Vector2i(dx, dy))
+
+	for pos: Vector2i in candidates:
+		if not generator.is_walkable(pos.x, pos.y):
+			continue
+		if pos in occupied:
+			continue
+		return pos
+	return Vector2i(-1, -1)
+
 func _drop_selected_item() -> void:
 	if p_inventory.is_empty():
 		return
 	inv_cursor = clamp(inv_cursor, 0, p_inventory.size() - 1)
 	var item: Dictionary = p_inventory[inv_cursor]
+
+	var drop_pos := _find_free_drop_pos(p_grid)
+	if drop_pos == Vector2i(-1, -1):
+		add_message("周囲に捨てる場所がない。")
+		return
+
 	# 装備中なら外す（_iid で個体一致を確認）
 	if p_weapon.get("_iid", -1) == item.get("_iid", -2) and not item.get("cursed", false):
 		p_weapon = {}
@@ -966,10 +1269,11 @@ func _drop_selected_item() -> void:
 		p_shield = {}
 	if p_ring.get("_iid", -1) == item.get("_iid", -2):
 		p_ring = {}
-	_place_floor_item(item, p_grid)
+	_place_floor_item(item, drop_pos)
 	p_inventory.remove_at(inv_cursor)
 	inv_cursor = min(inv_cursor, p_inventory.size() - 1)
-	add_message("%s を捨てた。" % item.get("name","?"))
+	var loc_msg := "足元に" if drop_pos == p_grid else "近くに"
+	add_message("%s を%s捨てた。" % [item.get("name","?"), loc_msg])
 	if p_inventory.is_empty():
 		game_state = "playing"
 	_refresh_hud()
@@ -1031,6 +1335,11 @@ func _sync_entity_visibility() -> void:
 	# ゴールド：探索済みなら表示
 	for pile in gold_piles:
 		pile["node"].visible = explored.has(pile["grid_pos"] as Vector2i)
+	# 店員・店アイテム：探索済みなら表示
+	if not _shopkeeper.is_empty():
+		_shopkeeper["node"].visible = explored.has(_shopkeeper["grid_pos"] as Vector2i)
+	for si in shop_items:
+		si["node"].visible = explored.has(si["grid_pos"] as Vector2i)
 
 # ─── カメラ更新 ───────────────────────────────────────────
 func _update_camera() -> void:
@@ -1044,15 +1353,277 @@ func _refresh_hud() -> void:
 		_hud.queue_redraw()
 
 # ─── ゲームオーバー・勝利 ────────────────────────────────
-func _trigger_game_over() -> void:
-	game_state = "dead"
+func _trigger_game_over(cause: String = "") -> void:
+	death_cause = cause
+	game_state  = "dead"
+	delete_save()   # ローグライク：死んだらセーブ削除
 	add_message("あなたは倒れた…")
 	_refresh_hud()
 
 func _trigger_victory() -> void:
 	game_state = "victory"
+	delete_save()   # クリア後もセーブ削除
 	add_message("古代の守護者を倒し、遺産を持ち帰った！")
 	_refresh_hud()
+
+# ─── セーブ・ロード ───────────────────────────────────────
+func has_save() -> bool:
+	return FileAccess.file_exists(SAVE_PATH)
+
+func delete_save() -> void:
+	if FileAccess.file_exists(SAVE_PATH):
+		var dir := DirAccess.open("user://")
+		if dir:
+			dir.remove("save.json")
+
+func save_game() -> void:
+	# タイルマップをフラット配列化
+	var tiles_flat: Array = []
+	for y in DungeonGenerator.MAP_H:
+		for x in DungeonGenerator.MAP_W:
+			tiles_flat.append(generator.map[y][x])
+
+	# 探索済みタイル
+	var explored_arr: Array = []
+	for pos: Vector2i in explored:
+		explored_arr.append([pos.x, pos.y])
+
+	# 敵
+	var enemies_arr: Array = []
+	for enemy in enemies:
+		enemies_arr.append({
+			"id":           enemy["data"].get("id", ""),
+			"hp":           enemy["hp"],
+			"grid_x":       enemy["grid_pos"].x,
+			"grid_y":       enemy["grid_pos"].y,
+			"alerted":      enemy.get("alerted", false),
+			"asleep":       enemy.get("asleep", false),
+			"asleep_turns": enemy.get("asleep_turns", 0),
+			"poisoned":     enemy.get("poisoned", 0),
+			"sealed":       enemy.get("sealed", false),
+		})
+
+	# フロアアイテム
+	var items_arr: Array = []
+	for fi in floor_items:
+		items_arr.append({
+			"item":   fi["item"].duplicate(true),
+			"grid_x": fi["grid_pos"].x,
+			"grid_y": fi["grid_pos"].y,
+		})
+
+	# 金山
+	var gold_arr: Array = []
+	for gp in gold_piles:
+		gold_arr.append({
+			"amount": gp["amount"],
+			"grid_x": gp["grid_pos"].x,
+			"grid_y": gp["grid_pos"].y,
+		})
+
+	# 店アイテム
+	var shop_arr: Array = []
+	for si in shop_items:
+		shop_arr.append({
+			"item":   si["item"].duplicate(true),
+			"price":  si["price"],
+			"grid_x": si["grid_pos"].x,
+			"grid_y": si["grid_pos"].y,
+		})
+	var shopkeeper_data := {}
+	if not _shopkeeper.is_empty():
+		shopkeeper_data = {
+			"grid_x": _shopkeeper["grid_pos"].x,
+			"grid_y": _shopkeeper["grid_pos"].y,
+		}
+
+	var data := {
+		"version":        1,
+		"turn_count":     turn_count,
+		"current_floor":  current_floor,
+		"elapsed_msec":   Time.get_ticks_msec() - _start_time_msec,
+		"next_iid":       _next_iid,
+		"player": {
+			"hp":          p_hp,
+			"hp_max":      p_hp_max,
+			"atk_base":    p_atk_base,
+			"def_base":    p_def_base,
+			"level":       p_level,
+			"exp":         p_exp,
+			"exp_next":    p_exp_next,
+			"fullness":    p_fullness,
+			"gold":        p_gold,
+			"blind_turns": p_blind_turns,
+			"regen_accum": _regen_accum,
+			"grid_x":      p_grid.x,
+			"grid_y":      p_grid.y,
+			"weapon":      p_weapon.duplicate(true),
+			"shield":      p_shield.duplicate(true),
+			"ring":        p_ring.duplicate(true),
+			"inventory":   p_inventory.duplicate(true),
+		},
+		"map_tiles":      tiles_flat,
+		"player_start_x": generator.player_start.x,
+		"player_start_y": generator.player_start.y,
+		"stairs_x":       generator.stairs_pos.x,
+		"stairs_y":       generator.stairs_pos.y,
+		"explored":       explored_arr,
+		"enemies":        enemies_arr,
+		"floor_items":    items_arr,
+		"gold_piles":     gold_arr,
+		"shop_items":     shop_arr,
+		"shopkeeper":     shopkeeper_data,
+		"has_shop":       generator.has_shop,
+		"shop_room":      [generator.shop_room.position.x, generator.shop_room.position.y,
+						   generator.shop_room.size.x,     generator.shop_room.size.y],
+		"shop_entered":   _shop_entered,
+	}
+
+	var file := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	if file:
+		file.store_string(JSON.stringify(data))
+		file.close()
+
+func load_game() -> bool:
+	if not FileAccess.file_exists(SAVE_PATH):
+		return false
+	var file := FileAccess.open(SAVE_PATH, FileAccess.READ)
+	if not file:
+		return false
+	var json_text := file.get_as_text()
+	file.close()
+
+	var json := JSON.new()
+	if json.parse(json_text) != OK:
+		return false
+	var data: Dictionary = json.get_data()
+	if not data.has("version"):
+		return false
+
+	# プレイヤーステータス復元
+	var pd: Dictionary = data["player"]
+	p_hp          = int(pd["hp"])
+	p_hp_max      = int(pd["hp_max"])
+	p_atk_base    = int(pd["atk_base"])
+	p_def_base    = int(pd["def_base"])
+	p_level       = int(pd["level"])
+	p_exp         = int(pd["exp"])
+	p_exp_next    = int(pd["exp_next"])
+	p_fullness    = int(pd["fullness"])
+	p_gold        = int(pd["gold"])
+	p_blind_turns = int(pd["blind_turns"])
+	_regen_accum  = float(pd["regen_accum"])
+	p_grid        = Vector2i(int(pd["grid_x"]), int(pd["grid_y"]))
+	p_weapon      = pd.get("weapon", {})
+	p_shield      = pd.get("shield", {})
+	p_ring        = pd.get("ring",   {})
+	p_inventory   = pd.get("inventory", [])
+	turn_count    = int(data["turn_count"])
+	current_floor = int(data["current_floor"])
+	_next_iid     = int(data.get("next_iid", 0))
+	_start_time_msec = Time.get_ticks_msec() - int(data.get("elapsed_msec", 0))
+
+	# マップ復元
+	generator = DungeonGenerator.new()
+	generator.load_map_data(
+		data["map_tiles"],
+		int(data["player_start_x"]), int(data["player_start_y"]),
+		int(data["stairs_x"]),       int(data["stairs_y"]))
+
+	# 探索済みタイル復元
+	explored.clear()
+	for pair in data["explored"]:
+		explored[Vector2i(int(pair[0]), int(pair[1]))] = true
+
+	# エンティティクリア
+	for ch in _entity_layer.get_children():
+		ch.queue_free()
+	enemies.clear()
+	floor_items.clear()
+	gold_piles.clear()
+	fov_visible.clear()
+
+	# マップ描画
+	_map_drawer.call("setup", generator, fov_visible, explored)
+
+	# プレイヤーノード
+	_player_node = _make_tile_node("@", Color(0.10, 0.28, 0.80))
+	_player_node.z_index = 1
+	_entity_layer.add_child(_player_node)
+	_player_node.call("set_grid", p_grid.x, p_grid.y)
+	_player_node.call("set_sprite", Assets.PLAYER)
+
+	# 敵復元
+	for ed in data["enemies"]:
+		var base_data: Dictionary = EnemyData.get_by_id(ed["id"])
+		if base_data.is_empty():
+			continue
+		var node := _make_tile_node(base_data["symbol"], base_data["color"])
+		node.z_index = 1
+		_entity_layer.add_child(node)
+		var pos := Vector2i(int(ed["grid_x"]), int(ed["grid_y"]))
+		node.call("set_grid", pos.x, pos.y)
+		node.call("set_sprite", Assets.enemy_sprite(base_data.get("id", "")))
+		enemies.append({
+			"data":         base_data,
+			"hp":           int(ed["hp"]),
+			"grid_pos":     pos,
+			"node":         node,
+			"alerted":      bool(ed.get("alerted", false)),
+			"asleep":       bool(ed.get("asleep", false)),
+			"asleep_turns": int(ed.get("asleep_turns", 0)),
+			"poisoned":     int(ed.get("poisoned", 0)),
+			"sealed":       bool(ed.get("sealed", false)),
+		})
+
+	# フロアアイテム復元
+	for fi in data["floor_items"]:
+		var item: Dictionary = fi["item"].duplicate(true)
+		var pos := Vector2i(int(fi["grid_x"]), int(fi["grid_y"]))
+		_place_floor_item(item, pos)
+
+	# 金山復元
+	for gp in data["gold_piles"]:
+		var pos := Vector2i(int(gp["grid_x"]), int(gp["grid_y"]))
+		_place_gold_pile(int(gp["amount"]), pos)
+
+	# 店復元
+	shop_items.clear()
+	_shopkeeper   = {}
+	_shop_entered = bool(data.get("shop_entered", false))
+	generator.has_shop = bool(data.get("has_shop", false))
+	var sr: Array = data.get("shop_room", [0,0,0,0])
+	generator.shop_room = Rect2i(int(sr[0]), int(sr[1]), int(sr[2]), int(sr[3]))
+	var sk_data: Dictionary = data.get("shopkeeper", {})
+	if not sk_data.is_empty():
+		var sk_pos := Vector2i(int(sk_data["grid_x"]), int(sk_data["grid_y"]))
+		generator.shop_keeper_pos = sk_pos
+		var sk_node := _make_tile_node("店", Color(0.15, 0.10, 0.05), Color(1.0, 0.85, 0.1), 14)
+		sk_node.z_index = 1
+		_entity_layer.add_child(sk_node)
+		sk_node.call("set_grid", sk_pos.x, sk_pos.y)
+		sk_node.call("set_sprite", Assets.SHOP_KEEPER)
+		_shopkeeper = {"grid_pos": sk_pos, "node": sk_node}
+	for si in data.get("shop_items", []):
+		var item: Dictionary = si["item"].duplicate(true)
+		var pos  := Vector2i(int(si["grid_x"]), int(si["grid_y"]))
+		var price: int = int(si["price"])
+		var sym: String = ItemData.type_symbol(item.get("type", 0))
+		var col: Color  = ItemData.type_color(item.get("type", 0))
+		var node := _make_tile_node(sym, Color(0.15, 0.10, 0.05), col, 18)
+		_entity_layer.add_child(node)
+		node.call("set_grid", pos.x, pos.y)
+		node.call("set_sprite", Assets.item_type_sprite(item.get("type", 0)))
+		shop_items.append({"item": item, "price": price, "grid_pos": pos, "node": node})
+
+	# FOV・カメラ・HUD
+	_update_fov()
+	_sync_entity_visibility()
+	_update_camera()
+	_refresh_hud()
+	_play_bgm("explore")
+	add_message("セーブデータを読み込みました。（B%dF / Turn%d）" % [current_floor, turn_count])
+	return true
 
 # ─── BGM ─────────────────────────────────────────────────
 func _play_bgm(key: String) -> void:
@@ -1328,6 +1899,8 @@ func add_message(text: String) -> void:
 	messages.append(text)
 	if messages.size() > 30:
 		messages.remove_at(0)
+	if is_instance_valid(_hud):
+		_hud.queue_redraw()
 
 func _enemy_at(pos: Vector2i) -> Variant:
 	for enemy in enemies:
