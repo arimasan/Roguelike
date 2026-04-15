@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/bearf/.claude/projects/c--Users-bearf-OneDrive--------newpj/memory/**)",
+      "Bash(mkdir -p \"c:/Users/bearf/OneDrive/ドキュメント/newpj/data\" \"c:/Users/bearf/OneDrive/ドキュメント/newpj/scripts\")",
+      "Bash(rm -rf \"c:/Users/bearf/OneDrive/ドキュメント/newpj/scenes\"/*)",
+      "Bash(mkdir -p \"c:/Users/bearf/OneDrive/ドキュメント/newpj/scenes\")",
+      "Bash(python3 -c ':*)",
+      "Bash(python -c ':*)",
+      "Bash(powershell -command 'Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile\\('\\\\''C:\\\\Users\\\\bearf\\\\OneDrive\\\\ドキュメント\\\\newpj\\\\assets\\\\tiles\\\\DungeonCrawl_ProjectUtumnoTileset.png'\\\\''\\); Write-Host $img.Width $img.Height')",
+      "Bash(powershell -command ':*)",
+      "Bash(powershell -command \"Remove-Item 'C:\\\\Users\\\\bearf\\\\OneDrive\\\\ドキュメント\\\\newpj\\\\assets\\\\tiles\\\\_*' -Force; Write-Host 'done'\")",
+      "Bash(powershell -command \"Remove-Item 'C:\\\\Users\\\\bearf\\\\OneDrive\\\\ドキュメント\\\\newpj\\\\assets\\\\tiles\\\\_*' -Force -ErrorAction SilentlyContinue; Write-Host 'done'\")"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\bearf\\OneDrive\\ドキュメント\\newpj\\scenes"
+    ]
+  }
+}

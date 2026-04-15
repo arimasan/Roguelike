@@ -46,6 +46,10 @@ var messages: Array = []
 # ─── インベントリカーソル ─────────────────────────────────
 var inv_cursor: int = 0
 
+# ─── ズーム ───────────────────────────────────────────────
+const ZOOM_LEVELS: Array[float] = [1.0, 2.0, 4.0]
+var _zoom_index: int = 1   # デフォルト x2
+
 # ─── ノード参照 ───────────────────────────────────────────
 var _map_drawer    = null   # map_drawer.gd スクリプト付き Node2D
 var _entity_layer: Node2D  = null
@@ -73,6 +77,7 @@ func _build_scene_nodes() -> void:
 	_camera.position_smoothing_enabled = true
 	_camera.position_smoothing_speed   = 12.0
 	add_child(_camera)
+	_apply_zoom()
 
 	# CanvasLayer → HUD
 	var canvas := CanvasLayer.new()
@@ -171,6 +176,17 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	var kev := event as InputEventKey
 
+	# ズーム操作はゲーム状態に関わらず有効
+	match kev.keycode:
+		KEY_KP_ADD, KEY_EQUAL:   # + キー：拡大
+			_zoom_index = min(_zoom_index + 1, ZOOM_LEVELS.size() - 1)
+			_apply_zoom()
+			return
+		KEY_KP_SUBTRACT, KEY_MINUS:   # - キー：縮小
+			_zoom_index = max(_zoom_index - 1, 0)
+			_apply_zoom()
+			return
+
 	match game_state:
 		"playing":
 			# '>' は unicode で判定（Shift+. はkeycodeがKEY_PERIODになるため）
@@ -183,6 +199,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		"dead", "victory":
 			if kev.keycode == KEY_R:
 				get_tree().reload_current_scene()
+
+func _apply_zoom() -> void:
+	var z: float = ZOOM_LEVELS[_zoom_index]
+	_camera.zoom = Vector2(z, z)
 
 func _diagonal_held() -> bool:
 	return Input.is_key_pressed(KEY_KP_7) or Input.is_key_pressed(KEY_KP_9) \
@@ -349,6 +369,11 @@ func _enemy_turns() -> void:
 		_single_enemy_turn(enemy)
 
 func _single_enemy_turn(enemy: Dictionary) -> void:
+	# 一時的な睡眠・封印のカウントダウン
+	if enemy.get("asleep_turns", 0) > 0:
+		enemy["asleep_turns"] -= 1
+		if enemy["asleep_turns"] <= 0:
+			enemy["asleep"] = false
 	if enemy.get("asleep", false):
 		return
 
@@ -515,6 +540,15 @@ func _apply_item(item: Dictionary) -> bool:
 			item["uses"] = uses
 			return false
 
+		ItemData.TYPE_STAFF:
+			_apply_staff(item)
+			var uses: int = item.get("uses", 1) - 1
+			if uses <= 0:
+				add_message("%s は砕け散った。" % item.get("name","?"))
+				return true
+			item["uses"] = uses
+			return false
+
 	return true
 
 func _apply_scroll(item: Dictionary) -> void:
@@ -598,6 +632,102 @@ func _apply_pot(item: Dictionary) -> void:
 			add_message("なぜか自分の目が見えなくなった…（視界1）")
 		"storage":
 			add_message("何も入っていない壺だった。")
+
+func _apply_staff(item: Dictionary) -> void:
+	var effect: String = item.get("effect", "")
+	add_message("%s を振った！" % item.get("name","?"))
+	match effect:
+		"fire":
+			var target = _nearest_visible_enemy()
+			if target == null:
+				add_message("しかし周囲に敵はいない。")
+				return
+			var dmg := randi_range(20, 35)
+			target["hp"] -= dmg
+			add_message("%s に炎が燃え上がった！%d ダメージ！" % [target["data"]["name"], dmg])
+			if target["hp"] <= 0:
+				_kill_enemy(target)
+
+		"thunder":
+			var hit := false
+			for enemy in enemies.duplicate():
+				if fov_visible.has(enemy["grid_pos"] as Vector2i):
+					var dmg := randi_range(10, 18)
+					enemy["hp"] -= dmg
+					add_message("%s に雷が落ちた！%d ダメージ！" % [enemy["data"]["name"], dmg])
+					if enemy["hp"] <= 0:
+						_kill_enemy(enemy)
+					hit = true
+			if not hit:
+				add_message("しかし周囲に敵はいない。")
+
+		"freeze":
+			var hit := false
+			for enemy in enemies:
+				if fov_visible.has(enemy["grid_pos"] as Vector2i):
+					enemy["asleep"]       = true
+					enemy["asleep_turns"] = 3
+					add_message("%s が凍りついた！" % enemy["data"]["name"])
+					hit = true
+			if not hit:
+				add_message("しかし周囲に敵はいない。")
+
+		"knockback":
+			var target = _nearest_visible_enemy()
+			if target == null:
+				add_message("しかし周囲に敵はいない。")
+				return
+			_knockback_enemy(target, 5)
+			add_message("%s を吹き飛ばした！" % target["data"]["name"])
+
+		"seal":
+			var target = _nearest_visible_enemy()
+			if target == null:
+				add_message("しかし周囲に敵はいない。")
+				return
+			target["asleep"]       = true
+			target["asleep_turns"] = 5
+			add_message("%s を封印した！" % target["data"]["name"])
+
+		"magic":
+			var target = _nearest_visible_enemy()
+			if target == null:
+				add_message("しかし周囲に敵はいない。")
+				return
+			target["hp"] = max(1, target["hp"] / 2)
+			add_message("%s のHPが半分になった！" % target["data"]["name"])
+
+## 視界内で最も近い敵を返す
+func _nearest_visible_enemy() -> Variant:
+	var best: Variant = null
+	var best_dist: int = 999999
+	for enemy in enemies:
+		var ep := enemy["grid_pos"] as Vector2i
+		if fov_visible.has(ep):
+			var d: int = ep.distance_squared_to(p_grid)
+			if d < best_dist:
+				best_dist = d
+				best      = enemy
+	return best
+
+## 敵をプレイヤーから遠ざける方向に steps マス押し飛ばす
+func _knockback_enemy(enemy: Dictionary, steps: int) -> void:
+	var diff := (enemy["grid_pos"] as Vector2i) - p_grid
+	var dx: int = sign(diff.x)
+	var dy: int = sign(diff.y)
+	if dx == 0 and dy == 0:
+		return
+	for _i in steps:
+		var np := (enemy["grid_pos"] as Vector2i) + Vector2i(dx, dy)
+		if np.x < 0 or np.x >= DungeonGenerator.MAP_W \
+				or np.y < 0 or np.y >= DungeonGenerator.MAP_H:
+			break
+		if not generator.is_walkable(np.x, np.y):
+			break
+		if _enemy_at(np) != null:
+			break
+		enemy["grid_pos"] = np
+		enemy["node"].call("set_grid", np.x, np.y)
 
 func _drop_selected_item() -> void:
 	if p_inventory.is_empty():

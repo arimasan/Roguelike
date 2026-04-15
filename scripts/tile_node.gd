@@ -46,8 +46,7 @@ func set_sprite(path: String) -> void:
 func _draw() -> void:
 	var half := TILE_SIZE / 2
 	if _sprite != null and is_instance_valid(_sprite) and _sprite.texture != null:
-		# スプライトあり: 黒背景のみ描画（スプライトは Sprite2D が担当）
-		draw_rect(Rect2(-half, -half, TILE_SIZE, TILE_SIZE), Color(0, 0, 0, 1))
+		# スプライトあり: 背景を描かずそのまま返す（透過ピクセルはマップタイルが透けて見える）
 		return
 	# フォールバック: シンボル文字描画
 	draw_rect(Rect2(-half, -half, TILE_SIZE, TILE_SIZE), bg_color)

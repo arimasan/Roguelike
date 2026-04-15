@@ -8,6 +8,7 @@ const TYPE_FOOD   = 2
 const TYPE_SCROLL = 3
 const TYPE_POT    = 4
 const TYPE_RING   = 5
+const TYPE_STAFF  = 6
 
 static func type_color(t: int) -> Color:
 	match t:
@@ -17,6 +18,7 @@ static func type_color(t: int) -> Color:
 		TYPE_SCROLL: return Color(0.90, 0.90, 0.25)
 		TYPE_POT:    return Color(0.35, 0.55, 0.90)
 		TYPE_RING:   return Color(0.90, 0.50, 0.15)
+		TYPE_STAFF:  return Color(0.60, 0.85, 1.00)
 	return Color.WHITE
 
 static func type_symbol(t: int) -> String:
@@ -27,6 +29,7 @@ static func type_symbol(t: int) -> String:
 		TYPE_SCROLL: return "?"
 		TYPE_POT:    return "!"
 		TYPE_RING:   return "="
+		TYPE_STAFF:  return "/"
 	return "*"
 
 # weight: 出現頻度の重み（高いほど出やすい）
@@ -72,6 +75,13 @@ const ALL: Array = [
 	{"id":"ring_def",      "name":"防御指輪",   "type":TYPE_RING, "def":5,               "weight":14},
 	{"id":"ring_detect",   "name":"探知指輪",   "type":TYPE_RING, "effect":"detection",   "weight":9},
 	{"id":"ring_exp",      "name":"経験指輪",   "type":TYPE_RING, "effect":"exp_boost",   "weight":8},
+	# ── 杖 ──────────────────────────────────────────────────
+	{"id":"staff_fire",      "name":"火炎の杖",       "type":TYPE_STAFF, "effect":"fire",      "uses":5, "weight":14},
+	{"id":"staff_thunder",   "name":"雷の杖",         "type":TYPE_STAFF, "effect":"thunder",   "uses":4, "weight":12},
+	{"id":"staff_freeze",    "name":"氷結の杖",       "type":TYPE_STAFF, "effect":"freeze",    "uses":3, "weight":10},
+	{"id":"staff_knockback", "name":"吹き飛ばしの杖", "type":TYPE_STAFF, "effect":"knockback", "uses":4, "weight":12},
+	{"id":"staff_seal",      "name":"封印の杖",       "type":TYPE_STAFF, "effect":"seal",      "uses":4, "weight":10},
+	{"id":"staff_magic",     "name":"魔力の杖",       "type":TYPE_STAFF, "effect":"magic",     "uses":2, "weight":6},
 ]
 
 static func get_by_id(item_id: String) -> Dictionary:

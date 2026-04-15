@@ -36,6 +36,7 @@ const ITEM_TYPES := {
 	3: "res://assets/sprites/items/scroll.png",   # 巻物
 	4: "res://assets/sprites/items/pot.png",      # 壺
 	5: "res://assets/sprites/items/ring.png",     # 指輪
+	6: "res://assets/sprites/items/staff.png",    # 杖
 }
 
 # ─── ユーティリティ ─────────────────────────────────────────
