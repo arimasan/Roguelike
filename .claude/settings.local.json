@@ -9,7 +9,10 @@
       "Bash(grep -l \"valid=false\" \"c:/Users/bearf/OneDrive/ドキュメント/newpj/assets/sprites/enemies/\"*.import)",
       "Bash(claude auth *)",
       "Bash(echo \"exit: $?\")",
-      "Bash(wc -l \"c:/Users/kazuh/Roguelike/scenes/game.gd\" \"c:/Users/kazuh/Roguelike/scripts/\"*.gd \"c:/Users/kazuh/Roguelike/data/\"*.gd)"
+      "Bash(wc -l \"c:/Users/kazuh/Roguelike/scenes/game.gd\" \"c:/Users/kazuh/Roguelike/scripts/\"*.gd \"c:/Users/kazuh/Roguelike/data/\"*.gd)",
+      "Bash(python -c \"from PIL import Image, ImageDraw, ImageFont; print\\('PIL OK'\\)\")",
+      "Bash(python -m pip install Pillow)",
+      "Bash(python -c \"from PIL import Image; print\\('OK'\\)\")"
     ]
   }
 }

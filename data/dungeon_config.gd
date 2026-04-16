@@ -18,7 +18,7 @@ const FLOOR_CONFIGS: Array = [
 	# ── デバッグ用：全フロア 100% 出現 ──────────────────────
 	{
 		"floor_min":            1,
-		"floor_max":           30,
+		"floor_max":           50,
 		"shop_chance":          1.0,   # デバッグ用 100%（通常は 0.25）
 		"monster_house_chance": 1.0,   # デバッグ用 100%（通常は 0.30）
 	},

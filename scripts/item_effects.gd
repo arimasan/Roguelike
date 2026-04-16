@@ -66,11 +66,18 @@ static func apply_status_to_enemy(game: Node, enemy: Dictionary, status: String,
 		"seal":
 			enemy["sealed"] = true
 			game.add_message("%s は封印された！" % name)
+		"interest":
+			enemy["interested_turns"] = max(int(enemy.get("interested_turns", 0)), turns)
+			game.add_message("%s は %s に興味を持った！" % [name, "あなた"])
 	game._refresh_enemy_status_visual(enemy)
 
 # ─── アイテム使用エントリポイント ──────────────────────────
 ## 戻り値: true=アイテム消費（インベントリから削除）, false=残す
 static func apply_item(game: Node, item: Dictionary) -> bool:
+	# 図鑑登録（初使用時のみメッセージ）
+	var item_id: String = item.get("id", "")
+	if Bestiary.discover_item(item_id):
+		game.add_message("図鑑に %s を登録した。" % item.get("name", "?"))
 	var t: int = item.get("type", -1)
 	match t:
 		ItemData.TYPE_WEAPON:
@@ -153,6 +160,8 @@ static func apply_item(game: Node, item: Dictionary) -> bool:
 						game.add_message("眠気が吹き飛んだ！")
 					else:
 						game.add_message("眠くはなかった。")
+				"charm":
+					game.add_message("自分に飲んでも効果はないようだ…")
 			return true
 
 		ItemData.TYPE_SCROLL:
@@ -330,6 +339,13 @@ static func apply_staff(game: Node, item: Dictionary) -> void:
 				return
 			target["hp"] = max(1, target["hp"] / 2)
 			game.add_message("%s のHPが半分になった！" % target["data"]["name"])
+
+		"charm":
+			var target = nearest_visible_enemy(game)
+			if target == null:
+				game.add_message("しかし周囲に敵はいない。")
+				return
+			apply_status_to_enemy(game, target, "interest", 6)
 
 # ─── ヘルパー ───────────────────────────────────────────────
 ## 視界内で最も近い敵を返す（なければ null）

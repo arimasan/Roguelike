@@ -62,6 +62,7 @@ const ALL: Array = [
 	{"id":"potion_cure",   "name":"万能薬", "type":TYPE_POTION, "effect":"antidote", "weight":14},
 	{"id":"potion_detox",  "name":"解毒薬", "type":TYPE_POTION, "effect":"detox",    "weight":18},
 	{"id":"potion_awaken", "name":"覚醒薬", "type":TYPE_POTION, "effect":"awaken",   "weight":14},
+	{"id":"potion_charm",  "name":"魅了の薬","type":TYPE_POTION, "effect":"charm",   "weight":8,  "se":"curse"},
 	# ── 本 ──────────────────────────────────────────────────
 	{"id":"sc_identify",   "name":"識別の本",      "type":TYPE_SCROLL, "effect":"identify",  "weight":20},
 	{"id":"sc_warp",       "name":"転移の本",      "type":TYPE_SCROLL, "effect":"warp",      "weight":18},
@@ -93,6 +94,7 @@ const ALL: Array = [
 	{"id":"staff_knockback", "name":"吹き飛ばしの杖", "type":TYPE_STAFF, "effect":"knockback", "uses":4, "weight":12},
 	{"id":"staff_seal",      "name":"封印の杖",       "type":TYPE_STAFF, "effect":"seal",      "uses":4, "weight":10, "se":"curse"},
 	{"id":"staff_magic",     "name":"魔力の杖",       "type":TYPE_STAFF, "effect":"magic",     "uses":2, "weight":6},
+	{"id":"staff_charm",     "name":"魅了の杖",       "type":TYPE_STAFF, "effect":"charm",     "uses":3, "weight":8,  "se":"curse"},
 ]
 
 static func sell_price(item: Dictionary) -> int:

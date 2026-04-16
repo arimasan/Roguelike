@@ -14,17 +14,48 @@ const TILE_STAIRS := "res://assets/sprites/tiles/stairs.png"
 # ─── 敵スプライト ─────────────────────────────────────────────
 ## キーは enemy_data.gd の "id" フィールドと対応
 const ENEMIES := {
-	"slime":       "res://assets/sprites/enemies/slime.png",
-	"bat":         "res://assets/sprites/enemies/bat.png",
-	"goblin":      "res://assets/sprites/enemies/goblin.png",
-	"skeleton":    "res://assets/sprites/enemies/skeleton.png",
-	"orc":         "res://assets/sprites/enemies/orc.png",
-	"ghost":       "res://assets/sprites/enemies/ghost.png",
-	"troll":       "res://assets/sprites/enemies/troll.png",
-	"witch":       "res://assets/sprites/enemies/witch.png",
-	"dragon":      "res://assets/sprites/enemies/dragon.png",
-	"dark_knight": "res://assets/sprites/enemies/dark_knight.png",
-	"guardian":    "res://assets/sprites/enemies/guardian.png",
+	# ── 序盤 ──
+	"slime":             "res://assets/sprites/enemies/slime.png",
+	"crow":              "res://assets/sprites/enemies/crow.png",
+	"crab":              "res://assets/sprites/enemies/crab.png",
+	"bat":               "res://assets/sprites/enemies/bat.png",
+	"mushroom":          "res://assets/sprites/enemies/mushroom.png",
+	"wolfen_girl":       "res://assets/sprites/enemies/wolfen_girl.png",
+	"goblin":            "res://assets/sprites/enemies/goblin.png",
+	# ── 中盤前半 ──
+	"skeleton":          "res://assets/sprites/enemies/skeleton.png",
+	"gnome":             "res://assets/sprites/enemies/gnome.png",
+	"dryad":             "res://assets/sprites/enemies/dryad.png",
+	"cat_maid_alpha":    "res://assets/sprites/enemies/cat_maid_alpha.png",
+	"harpy_girl":        "res://assets/sprites/enemies/harpy_girl.png",
+	"dwarf_girl":        "res://assets/sprites/enemies/dwarf_girl.png",
+	"tentacle_devil":    "res://assets/sprites/enemies/tentacle_devil.png",
+	"metallic_slime":    "res://assets/sprites/enemies/metallic_slime.png",
+	"dancer":            "res://assets/sprites/enemies/dancer.png",
+	"mimic":             "res://assets/sprites/enemies/mimic.png",
+	"ghost":             "res://assets/sprites/enemies/ghost.png",
+	# ── 中盤後半 ──
+	"minotaur":          "res://assets/sprites/enemies/minotaur.png",
+	"vampire_girl":      "res://assets/sprites/enemies/vampire_girl.png",
+	"clown_girl":        "res://assets/sprites/enemies/clown_girl.png",
+	"butler":            "res://assets/sprites/enemies/butler.png",
+	"cat_maid_gamma":    "res://assets/sprites/enemies/cat_maid_gamma.png",
+	"witch":             "res://assets/sprites/enemies/witch.png",
+	# ── 終盤 ──
+	"centaur":           "res://assets/sprites/enemies/centaur.png",
+	"dark_elf_shaman":   "res://assets/sprites/enemies/dark_elf_shaman.png",
+	"silver_fox":        "res://assets/sprites/enemies/silver_fox.png",
+	"samurai_girl":      "res://assets/sprites/enemies/samurai_girl.png",
+	"dark_knight":       "res://assets/sprites/enemies/dark_knight.png",
+	"scylla":            "res://assets/sprites/enemies/scylla.png",
+	"dragon":            "res://assets/sprites/enemies/dragon.png",
+	# ── 最終 ──
+	"mecha_dragon":      "res://assets/sprites/enemies/mecha_dragon.png",
+	"dragon_zombie":     "res://assets/sprites/enemies/dragon_zombie.png",
+	"lich":              "res://assets/sprites/enemies/lich.png",
+	"inari_hime":        "res://assets/sprites/enemies/inari_hime.png",
+	"death":             "res://assets/sprites/enemies/death.png",
+	"goddess":           "res://assets/sprites/enemies/goddess.png",
 }
 
 # ─── アイテム種別スプライト ──────────────────────────────────

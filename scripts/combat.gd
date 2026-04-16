@@ -48,16 +48,75 @@ static func player_attack(game: Node, enemy: Dictionary) -> void:
 		kill_enemy(game, enemy)
 
 # ─── 敵撃破＋経験値・レベル処理 ────────────────────────────
-static func kill_enemy(game: Node, enemy: Dictionary) -> void:
+## by_companion=true のときは経験値を与えない（仲間が倒した場合）
+static func kill_enemy(game: Node, enemy: Dictionary, by_companion: bool = false) -> void:
+	# 興味状態で倒された場合は仲間勧誘のチャンス
+	if not by_companion and int(enemy.get("interested_turns", 0)) > 0:
+		_try_recruit(game, enemy)
+		return
 	game.add_message("%s を倒した！" % enemy["data"]["name"])
-	var gained_exp: int = int(enemy["data"].get("exp", 0))
-	if game.p_ring.get("effect", "") == "exp_boost":
-		gained_exp = int(gained_exp * 1.5)
-	game.p_exp = int(game.p_exp) + gained_exp
-	game.add_message("経験値 %d 獲得。" % gained_exp)
+	# 図鑑登録（初撃破時のみメッセージ）
+	var enemy_id: String = enemy["data"].get("id", "")
+	if Bestiary.discover_enemy(enemy_id):
+		game.add_message("図鑑に %s を登録した。" % enemy["data"]["name"])
+	if not by_companion:
+		var gained_exp: int = int(enemy["data"].get("exp", 0))
+		if game.p_ring.get("effect", "") == "exp_boost":
+			gained_exp = int(gained_exp * 1.5)
+		game.p_exp = int(game.p_exp) + gained_exp
+		game.add_message("経験値 %d 獲得。" % gained_exp)
+		check_level_up(game)
 	enemy["node"].queue_free()
 	game.enemies.erase(enemy)
-	check_level_up(game)
+
+## 興味状態で倒された敵から仲間勧誘の会話を発火する
+static func _try_recruit(game: Node, enemy: Dictionary) -> void:
+	# 図鑑には倒した実績として登録（仲間化前提でも撃破は撃破）
+	var enemy_id: String = enemy["data"].get("id", "")
+	Bestiary.discover_enemy(enemy_id)
+	# 隣接マスの空きを先に確保（なければ仲間化不可で通常撃破）
+	var spawn_pos: Vector2i = game._find_free_adjacent_tile()
+	# 会話用に enemy ノードはまだ消さず保留
+	var name: String = enemy["data"].get("name", "敵")
+	var line: String = enemy["data"].get("recruit_line",
+		"…ねぇ、私を仲間にしない？\nあなたの旅を、一緒に行きたいの。")
+	DialogUI.start(game, name,
+		[line],
+		["はい", "いいえ"],
+		func(choice: int) -> void:
+			_finish_recruit(game, enemy, spawn_pos, choice))
+
+static func _finish_recruit(game: Node, enemy: Dictionary, spawn_pos: Vector2i, choice: int) -> void:
+	if choice == 0:
+		# はい：仲間化
+		if spawn_pos == Vector2i(-1, -1):
+			game.add_message("…しかし周囲に空きがない。")
+			_finalize_kill_no_exp(game, enemy)
+			return
+		if not CompanionAI.add_from_enemy(game, enemy, spawn_pos):
+			# 満員などで失敗
+			_finalize_kill_no_exp(game, enemy)
+			return
+		Bestiary.recruit_enemy(enemy["data"].get("id", ""))
+		game.add_message("★ %s が仲間に加わった！" % enemy["data"].get("name", "?"))
+		_finalize_kill_no_exp(game, enemy)
+	else:
+		# いいえ：そのまま撃破（経験値あり）
+		game.add_message("%s を倒した！" % enemy["data"]["name"])
+		var gained_exp: int = int(enemy["data"].get("exp", 0))
+		if game.p_ring.get("effect", "") == "exp_boost":
+			gained_exp = int(gained_exp * 1.5)
+		game.p_exp = int(game.p_exp) + gained_exp
+		game.add_message("経験値 %d 獲得。" % gained_exp)
+		check_level_up(game)
+		_finalize_kill_no_exp(game, enemy)
+
+static func _finalize_kill_no_exp(game: Node, enemy: Dictionary) -> void:
+	if is_instance_valid(enemy.get("node")):
+		enemy["node"].queue_free()
+	game.enemies.erase(enemy)
+	# 会話で保留されていたターンを進める
+	game._end_player_turn()
 
 static func check_level_up(game: Node) -> void:
 	while int(game.p_exp) >= int(game.p_exp_next):

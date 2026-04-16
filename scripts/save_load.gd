@@ -58,6 +58,20 @@ static func save_game(game: Node) -> void:
 			"slow_skip":       enemy.get("slow_skip", false),
 			"confused_turns":  enemy.get("confused_turns", 0),
 			"paralyzed_turns": enemy.get("paralyzed_turns", 0),
+			"interested_turns":enemy.get("interested_turns", 0),
+			"mh_asleep":       enemy.get("mh_asleep", false),
+			"skill_cooldowns": (enemy.get("skill_cooldowns", {}) as Dictionary).duplicate(true),
+		})
+
+	# 仲間
+	var comp_arr: Array = []
+	for c in game.companions:
+		comp_arr.append({
+			"id":     c["data"].get("id", ""),
+			"hp":     int(c["hp"]),
+			"hp_max": int(c.get("hp_max", c["hp"])),
+			"grid_x": c["grid_pos"].x,
+			"grid_y": c["grid_pos"].y,
 		})
 
 	# フロアアイテム
@@ -135,6 +149,7 @@ static func save_game(game: Node) -> void:
 							return [r.position.x, r.position.y, r.size.x, r.size.y]),
 		"explored":       explored_arr,
 		"enemies":        enemies_arr,
+		"companions":     comp_arr,
 		"floor_items":    items_arr,
 		"gold_piles":     gold_arr,
 		"shop_items":     shop_arr,
@@ -269,9 +284,34 @@ static func load_game(game: Node) -> bool:
 			"slow_skip":       bool(ed.get("slow_skip", false)),
 			"confused_turns":  int(ed.get("confused_turns", 0)),
 			"paralyzed_turns": int(ed.get("paralyzed_turns", 0)),
+			"interested_turns":int(ed.get("interested_turns", 0)),
+			"mh_asleep":       bool(ed.get("mh_asleep", false)),
+			"skill_cooldowns": (ed.get("skill_cooldowns", {}) as Dictionary).duplicate(true),
 		}
 		game.enemies.append(edict)
 		game._refresh_enemy_status_visual(edict)
+
+	# 仲間復元
+	game.companions.clear()
+	for cd in data.get("companions", []):
+		var base_data: Dictionary = EnemyData.get_by_id(cd["id"])
+		if base_data.is_empty():
+			continue
+		var pos: Vector2i = Vector2i(int(cd["grid_x"]), int(cd["grid_y"]))
+		var node: Node2D = game._make_tile_node(base_data["symbol"], base_data["color"])
+		node.z_index = 1
+		game._entity_layer.add_child(node)
+		node.call("set_grid", pos.x, pos.y)
+		node.call("set_sprite", Assets.enemy_sprite(base_data.get("id", "")))
+		node.call("set_status", "仲", Color(0.4, 0.7, 1.0))
+		game.companions.append({
+			"data":     base_data,
+			"hp":       int(cd["hp"]),
+			"hp_max":   int(cd.get("hp_max", cd["hp"])),
+			"grid_pos": pos,
+			"node":     node,
+			"skill_cooldowns": {},
+		})
 
 	# フロアアイテム復元
 	for fi in data["floor_items"]:

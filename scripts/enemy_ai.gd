@@ -58,6 +58,7 @@ static func setup_monster_house(game: Node) -> void:
 		node.call("set_grid", spawn_pos.x, spawn_pos.y)
 		node.call("set_sprite", Assets.enemy_sprite(data.get("id", "")))
 		var edict: Dictionary = _make_enemy_dict(data, spawn_pos, node, true, false)
+		edict["mh_asleep"] = true   # MH発動前の眠り。隣接で確定解除される
 		game.enemies.append(edict)
 		node.call("set_status", "眠", Color(0.3, 0.8, 1.0))
 		occupied.append(spawn_pos)
@@ -142,6 +143,12 @@ static func run_turn(game: Node, enemy: Dictionary) -> void:
 		if enemy["confused_turns"] == 0:
 			game._refresh_enemy_status_visual(enemy)
 
+	# 興味カウントダウン（仲間化チャンスの残り）
+	if enemy.get("interested_turns", 0) > 0:
+		enemy["interested_turns"] -= 1
+		if enemy["interested_turns"] == 0:
+			game._refresh_enemy_status_visual(enemy)
+
 	# regen: HPを1回復
 	if enemy["data"].get("behavior", "") == "regen":
 		enemy["hp"] = min(enemy["hp"] + 1, enemy["data"]["hp"])
@@ -152,15 +159,25 @@ static func run_turn(game: Node, enemy: Dictionary) -> void:
 		random_walk(game, enemy)
 		return
 
+	# スキルCTのデクリメント
+	EnemySkills.tick_cooldowns(enemy)
+
 	var ep: Vector2i = enemy["grid_pos"] as Vector2i
 	var p_grid: Vector2i = game.p_grid
 	var in_sight: bool = game.fov_visible.has(ep)
 
 	if in_sight or enemy.get("alerted", false):
 		enemy["alerted"] = true
-		# 隣接していれば攻撃
+		# スキル発動抽選（成功したら通常行動スキップ）
+		if EnemySkills.try_activate(game, enemy):
+			return
+		# 隣接した仲間がいれば優先攻撃
+		var adj_comp = _find_adjacent_companion(game, ep)
+		# 隣接していれば（プレイヤー or 仲間）攻撃
 		if ep.distance_squared_to(p_grid) <= 2:
 			attack(game, enemy)
+		elif adj_comp != null:
+			attack_companion(game, enemy, adj_comp)
 		else:
 			# 追いかけ移動
 			chase(game, enemy)
@@ -177,13 +194,30 @@ static func attack(game: Node, enemy: Dictionary) -> void:
 	var dmg: int = max(1, int(enemy["data"].get("atk", 1)) - Combat.calc_def(game))
 	Combat.apply_damage_to_player(game, dmg, enemy["data"]["name"])
 
+## 隣接する仲間を返す（なければ null）
+static func _find_adjacent_companion(game: Node, ep: Vector2i) -> Variant:
+	for d: Vector2i in _DIRS_8:
+		var c = CompanionAI.at(game, ep + d)
+		if c != null:
+			return c
+	return null
+
+static func attack_companion(game: Node, enemy: Dictionary, comp: Dictionary) -> void:
+	var dmg: int = max(1, int(enemy["data"].get("atk", 1)) - int(comp["data"].get("def", 0)))
+	CompanionAI.damage(game, comp, dmg, enemy["data"].get("name", "敵"))
+
+const _DIRS_8: Array = [
+	Vector2i( 1, 0), Vector2i(-1, 0), Vector2i( 0, 1), Vector2i( 0,-1),
+	Vector2i( 1, 1), Vector2i( 1,-1), Vector2i(-1, 1), Vector2i(-1,-1),
+]
+
 static func chase(game: Node, enemy: Dictionary) -> void:
 	var ep: Vector2i = enemy["grid_pos"] as Vector2i
 	var p_grid: Vector2i = game.p_grid
 	var best_dir: Vector2i = Vector2i.ZERO
 	var best_dist: int = ep.distance_squared_to(p_grid)
 
-	var dirs: Array = [Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1)]
+	var dirs: Array = _DIRS_8.duplicate()
 	dirs.shuffle()
 
 	var is_ghost: bool = enemy["data"].get("behavior", "") == "ghost"
@@ -201,7 +235,7 @@ static func chase(game: Node, enemy: Dictionary) -> void:
 static func random_walk(game: Node, enemy: Dictionary) -> void:
 	if randi() % 3 != 0:
 		return
-	var dirs: Array = [Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1)]
+	var dirs: Array = _DIRS_8.duplicate()
 	dirs.shuffle()
 	var is_ghost: bool = enemy["data"].get("behavior", "") == "ghost"
 	for dir in dirs:
@@ -285,4 +319,6 @@ static func _make_enemy_dict(data: Dictionary, pos: Vector2i, node: Node2D,
 		"slow_skip":       false,
 		"confused_turns":  0,
 		"paralyzed_turns": 0,
+		"interested_turns":0,
+		"skill_cooldowns": {},
 	}

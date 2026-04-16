@@ -165,6 +165,10 @@ static func confirm_throw(game: Node) -> void:
 			game.game_state = "inventory"
 			game._refresh_hud()
 			return
+	# 図鑑登録（投擲した時点で発見扱い）
+	var item_id: String = item.get("id", "")
+	if Bestiary.discover_item(item_id):
+		game.add_message("図鑑に %s を登録した。" % item.get("name", "?"))
 	var dir: Vector2i = game._aim_dir
 	clear_arrow(game)
 	game.p_facing = dir
@@ -350,6 +354,8 @@ static func _apply_potion_effect_to_enemy(game: Node, enemy: Dictionary, item: D
 				enemy["asleep_turns"] = 0
 				game._refresh_enemy_status_visual(enemy)
 				game.add_message("%s の眠気が吹き飛んだ！" % name)
+		"charm":
+			ItemEffects.apply_status_to_enemy(game, enemy, "interest", 6)
 
 # ─── 落下：ワナ発動＋アイテム設置 ─────────────────────────
 static func land_item(game: Node, item: Dictionary, pos: Vector2i) -> void:

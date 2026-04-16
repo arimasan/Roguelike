@@ -3,7 +3,7 @@ extends Node2D
 
 # ─── 定数 ─────────────────────────────────────────────────
 const TILE_SIZE     := 32
-const MAX_FLOOR     := 30
+const MAX_FLOOR     := 50
 const MAX_INVENTORY := 20
 const FOV_RADIUS    := 7
 const FOV_MODE_CLASSIC := 0   # ①通路=周囲1マス、部屋=全体照明
@@ -51,6 +51,10 @@ var _hunger_accum:  float = 0.0     # 空腹ダメージの積み立て
 # enemies: Array of { "data": dict, "hp": int, "grid_pos": V2i,
 #                     "node": Node2D, "asleep": bool, "alerted": bool }
 var enemies:     Array = []
+# companions: Array of { "data": dict, "hp": int, "grid_pos": V2i, "node": Node2D }
+##   仲間：プレイヤーに追従し敵を攻撃する。同時最大 MAX_COMPANIONS 体。
+var companions: Array = []
+const MAX_COMPANIONS: int = 3
 # floor_items: Array of { "item": dict, "grid_pos": V2i, "node": Node2D }
 var floor_items: Array = []
 # gold_piles: Array of { "amount": int, "grid_pos": V2i, "node": Node2D }
@@ -132,6 +136,30 @@ var _hud           = null   # hud.gd スクリプト付き Control
 var _bgm_player:   AudioStreamPlayer = null
 var _options_layer:  CanvasLayer = null
 var _confirm_layer:  CanvasLayer = null   # 諦め確認ダイアログ
+var debug_mode:      bool        = true    # F12 でトグル。図鑑内に「生成する」ボタンを表示
+var _bestiary_layer: CanvasLayer = null   # 図鑑画面
+var _bestiary_tabs:  TabContainer = null
+var _bestiary_enemy_list:   ItemList    = null
+var _bestiary_enemy_detail: RichTextLabel = null
+var _bestiary_enemy_sprite: TextureRect = null
+var _bestiary_enemy_btn:    Button      = null
+var _bestiary_item_list:    ItemList    = null
+var _bestiary_item_detail:  RichTextLabel = null
+var _bestiary_item_sprite:  TextureRect = null
+var _bestiary_item_btn:     Button      = null
+var _bestiary_trap_list:    ItemList    = null
+var _bestiary_trap_detail:  RichTextLabel = null
+var _bestiary_trap_sprite:  TextureRect = null
+var _bestiary_trap_btn:     Button      = null
+# ─── 会話イベント ───────────────────────────────────────
+var _dialog_layer:    CanvasLayer  = null
+var _dialog_speaker:  Label         = null
+var _dialog_body:     RichTextLabel = null
+var _dialog_hint:     Label         = null
+var _dialog_lines:    Array         = []
+var _dialog_idx:      int           = 0
+var _dialog_choices:  Array         = []
+var _dialog_callback: Callable      = Callable()
 var _lbl_master_pct:    Label   = null
 var _lbl_bgm_pct:       Label   = null
 var _lbl_se_pct:        Label   = null
@@ -152,6 +180,8 @@ const KEY_ACTIONS: Dictionary = {
 	"move_right": {"label": "右移動",             "default": KEY_RIGHT},
 	"diag_mod":   {"label": "斜め移動モディファイア", "default": KEY_SHIFT},
 	"dash":       {"label": "ダッシュ",            "default": KEY_CTRL},
+	"idash":      {"label": "i-ダッシュ（便利移動）", "default": KEY_TAB},
+	"bestiary":   {"label": "図鑑",                 "default": KEY_Z},
 	"wait":       {"label": "待機/階段を降りる",   "default": KEY_SPACE},
 	"inventory":  {"label": "インベントリ",        "default": KEY_I},
 	"pickup":     {"label": "拾う",               "default": KEY_G},
@@ -288,6 +318,10 @@ func _build_scene_nodes() -> void:
 
 	# オプションパネル
 	OptionsUI.build_panel(self)
+	# 図鑑パネル
+	BestiaryUI.build_panel(self)
+	# 会話パネル
+	DialogUI.build_panel(self)
 
 	# CanvasLayer → HUD
 	var canvas := CanvasLayer.new()
@@ -301,10 +335,19 @@ func _build_scene_nodes() -> void:
 
 # ─── フロア生成 ───────────────────────────────────────────
 func _start_new_floor() -> void:
+	# 仲間データを退避（ノードはこの後一括 queue_free されるため）
+	var carry_companions: Array = []
+	for c: Dictionary in companions:
+		carry_companions.append({
+			"data":     (c["data"] as Dictionary).duplicate(true),
+			"hp":       int(c["hp"]),
+			"hp_max":   int(c.get("hp_max", c["hp"])),
+		})
 	# 旧エンティティ削除
 	for ch in _entity_layer.get_children():
 		ch.queue_free()
 	enemies.clear()
+	companions.clear()
 	floor_items.clear()
 	gold_piles.clear()
 	shop_items.clear()
@@ -341,6 +384,26 @@ func _start_new_floor() -> void:
 		ShopLogic.setup(self)
 	if generator.has_monster_house:
 		EnemyAI.setup_monster_house(self)
+
+	# 仲間を再配置（プレイヤー隣接マスに）
+	for cdata: Dictionary in carry_companions:
+		var pos: Vector2i = _find_free_adjacent_tile()
+		if pos == Vector2i(-1, -1):
+			pos = p_grid   # フォールバック（重なる）
+		var node: Node2D = _make_tile_node(cdata["data"]["symbol"], cdata["data"]["color"])
+		node.z_index = 1
+		_entity_layer.add_child(node)
+		node.call("set_grid", pos.x, pos.y)
+		node.call("set_sprite", Assets.enemy_sprite(cdata["data"].get("id", "")))
+		node.call("set_status", "仲", Color(0.4, 0.7, 1.0))
+		companions.append({
+			"data":     cdata["data"],
+			"hp":       cdata["hp"],
+			"hp_max":   cdata["hp_max"],
+			"grid_pos": pos,
+			"node":     node,
+			"skill_cooldowns": {},
+		})
 
 	# FOV更新・カメラ・HUD
 	Fov.update(self)
@@ -412,6 +475,9 @@ func _check_trap(pos: Vector2i) -> void:
 		trap["node"].call("flash", Color(1.0, 0.5, 0.0))
 		_play_se(TrapData.trap_se(trap["type"]))
 		add_message("%s にはまった！" % TrapData.trap_name(trap["type"]))
+		# 図鑑登録（初発動時のみ）
+		if Bestiary.discover_trap(str(trap["type"])):
+			add_message("図鑑に %s を登録した。" % TrapData.trap_name(trap["type"]))
 		# 効果適用
 		match trap["type"]:
 			"damage":
@@ -508,12 +574,43 @@ func _refresh_enemy_status_visual(enemy: Dictionary) -> void:
 		node.call("set_status", "毒", Color(0.3, 1.0, 0.3))
 	elif enemy.get("sealed", false):
 		node.call("set_status", "封", Color(0.9, 0.5, 0.1))
+	elif enemy.get("interested_turns", 0) > 0:
+		node.call("set_status", "興", Color(1.0, 0.5, 0.85))
 	else:
 		node.call("clear_status")
 
 ## 店を開く処理・カーペットドロップ変換は ShopLogic.open / convert_carpet_drops に分離済み
 
 ## エリア（探索/店/MH）に応じてBGM切り替え・入退場メッセージを管理する
+## プレイヤー周囲8マスにいる MH 眠り敵を確定で起こす（通常の状態異常眠りには影響しない）
+func _wake_adjacent_mh_enemies() -> void:
+	for d: Vector2i in [
+			Vector2i( 1, 0), Vector2i(-1, 0), Vector2i( 0, 1), Vector2i( 0,-1),
+			Vector2i( 1, 1), Vector2i( 1,-1), Vector2i(-1, 1), Vector2i(-1,-1)]:
+		var np: Vector2i = p_grid + d
+		var e = _enemy_at(np)
+		if e == null:
+			continue
+		if not e.get("mh_asleep", false):
+			continue
+		e["mh_asleep"]    = false
+		e["asleep"]       = false
+		e["asleep_turns"] = 0
+		e["alerted"]      = true
+		_refresh_enemy_status_visual(e)
+		add_message("%s が目を覚ました！" % e["data"].get("name", "敵"))
+
+## 仲間がモンスターハウスに踏み込んだ場合に MH を発動させる
+func _check_companion_mh_trigger() -> void:
+	if not generator.has_monster_house or _monster_house_triggered:
+		return
+	var mh_room: Rect2i = generator.monster_house_room
+	for c in companions:
+		if mh_room.has_point(c["grid_pos"] as Vector2i):
+			EnemyAI.trigger_monster_house(self)
+			_play_bgm("monster_house")
+			return
+
 func _update_area_bgm() -> void:
 	# ─ BGM ターゲットを決定 ────────────────────────────────
 	var in_mh:   bool = generator.has_monster_house and generator.monster_house_room.has_point(p_grid)
@@ -573,6 +670,87 @@ func _spawn_traps() -> void:
 		var td: Dictionary = TrapData.random_trap()
 		_place_trap(td["id"], pos)
 
+## プレイヤー隣接マス（8方向）から空き床マスを返す。なければ Vector2i(-1,-1)
+func _find_free_adjacent_tile() -> Vector2i:
+	for d: Vector2i in [
+			Vector2i( 1, 0), Vector2i(-1, 0), Vector2i( 0, 1), Vector2i( 0,-1),
+			Vector2i( 1, 1), Vector2i( 1,-1), Vector2i(-1, 1), Vector2i(-1,-1)]:
+		var p: Vector2i = p_grid + d
+		if not generator.is_walkable(p.x, p.y):
+			continue
+		if _enemy_at(p) != null:
+			continue
+		if _item_at(p) != null:
+			continue
+		var blocked: bool = false
+		for tr: Dictionary in traps:
+			if (tr["grid_pos"] as Vector2i) == p:
+				blocked = true
+				break
+		if blocked:
+			continue
+		if not _shopkeeper.is_empty() and _shopkeeper["grid_pos"] == p:
+			continue
+		return p
+	return Vector2i(-1, -1)
+
+## デバッグ：敵IDから1体を隣接マスに召喚
+func debug_spawn_enemy(enemy_id: String) -> bool:
+	var pos: Vector2i = _find_free_adjacent_tile()
+	if pos == Vector2i(-1, -1):
+		add_message("隣接マスに空きがない。")
+		return false
+	var data: Dictionary = EnemyData.get_by_id(enemy_id)
+	if data.is_empty():
+		add_message("不明な敵ID: %s" % enemy_id)
+		return false
+	var node: Node2D = _make_tile_node(data["symbol"], data["color"])
+	node.z_index = 1
+	_entity_layer.add_child(node)
+	node.call("set_grid", pos.x, pos.y)
+	node.call("set_sprite", Assets.enemy_sprite(data.get("id", "")))
+	enemies.append({
+		"data": data, "hp": int(data.get("hp", 1)),
+		"grid_pos": pos, "node": node,
+		"asleep": false, "alerted": true,
+		"asleep_turns": 0, "poisoned": 0, "sealed": false,
+		"slow_turns": 0, "slow_skip": false,
+		"confused_turns": 0, "paralyzed_turns": 0,
+		"skill_cooldowns": {},
+	})
+	add_message("[DEBUG] %s を生成した。" % data.get("name", "?"))
+	return true
+
+## デバッグ：アイテムIDから1個を隣接マスに配置
+func debug_spawn_item(item_id: String) -> bool:
+	var pos: Vector2i = _find_free_adjacent_tile()
+	if pos == Vector2i(-1, -1):
+		add_message("隣接マスに空きがない。")
+		return false
+	var item: Dictionary = ItemData.get_by_id(item_id)
+	if item.is_empty():
+		add_message("不明なアイテムID: %s" % item_id)
+		return false
+	item["_iid"] = _next_iid
+	_next_iid += 1
+	_place_floor_item(item, pos)
+	add_message("[DEBUG] %s を生成した。" % item.get("name", "?"))
+	return true
+
+## デバッグ：ワナIDから1個を隣接マスに配置（未発動状態）
+func debug_spawn_trap(trap_id: String) -> bool:
+	var pos: Vector2i = _find_free_adjacent_tile()
+	if pos == Vector2i(-1, -1):
+		add_message("隣接マスに空きがない。")
+		return false
+	var td: Dictionary = TrapData.get_by_id(trap_id)
+	if td.is_empty():
+		add_message("不明なワナID: %s" % trap_id)
+		return false
+	_place_trap(trap_id, pos)
+	add_message("[DEBUG] %s を生成した。" % td.get("name", "?"))
+	return true
+
 # ─── 入力処理 ─────────────────────────────────────────────
 func _unhandled_input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed:
@@ -587,6 +765,16 @@ func _unhandled_input(event: InputEvent) -> void:
 			OptionsUI.cancel_rebind(self)
 		else:
 			OptionsUI.finish_rebind(self, kc)
+		return
+
+	# F12: デバッグモードトグル（図鑑内に「生成する」ボタンを出すなど）
+	if kc == KEY_F12:
+		debug_mode = not debug_mode
+		add_message("デバッグモード: %s" % ("ON" if debug_mode else "OFF"))
+		# 図鑑が開いていれば再描画（ボタン表示・全エントリ表示の切替）
+		if game_state == "bestiary" and is_instance_valid(_bestiary_layer):
+			BestiaryUI.refresh_visibility(self)
+			BestiaryUI.open(self)   # リスト・詳細を再描画
 		return
 
 	# ズーム操作はゲーム状態に関わらず有効
@@ -627,6 +815,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			if kc == KEY_ESCAPE:
 				OptionsUI.close(self)
 				return
+		"bestiary":
+			BestiaryUI.handle_input(self, kc)
+		"dialog":
+			DialogUI.handle_input(self, kc)
 		"dead", "victory":
 			if kc == KEY_R:
 				get_tree().reload_current_scene()
@@ -658,7 +850,9 @@ func _handle_play_input(kc: int) -> void:
 		_p_slow_skip = true
 	var mod: int  = key_bindings.get("diag_mod", KEY_SHIFT)
 	var dash_k: int = key_bindings.get("dash", KEY_CTRL)
+	var idash_k: int = key_bindings.get("idash", KEY_TAB)
 	var is_dash: bool = Input.is_key_pressed(dash_k)
+	var is_idash: bool = Input.is_key_pressed(idash_k)
 
 	# 混乱：移動キーを押したとき方向をランダム化
 	if p_confused_turns > 0:
@@ -681,24 +875,27 @@ func _handle_play_input(kc: int) -> void:
 		var down_h  := Input.is_key_pressed(key_bindings.get("move_down",  KEY_DOWN))
 		var left_h  := Input.is_key_pressed(key_bindings.get("move_left",  KEY_LEFT))
 		var right_h := Input.is_key_pressed(key_bindings.get("move_right", KEY_RIGHT))
-		if   up_h   and left_h:  _move_or_dash(Vector2i(-1, -1), is_dash)
-		elif up_h   and right_h: _move_or_dash(Vector2i( 1, -1), is_dash)
-		elif down_h and left_h:  _move_or_dash(Vector2i(-1,  1), is_dash)
-		elif down_h and right_h: _move_or_dash(Vector2i( 1,  1), is_dash)
+		if   up_h   and left_h:  _move_or_dash(Vector2i(-1, -1), is_dash, is_idash)
+		elif up_h   and right_h: _move_or_dash(Vector2i( 1, -1), is_dash, is_idash)
+		elif down_h and left_h:  _move_or_dash(Vector2i(-1,  1), is_dash, is_idash)
+		elif down_h and right_h: _move_or_dash(Vector2i( 1,  1), is_dash, is_idash)
 		return  # 2方向揃っていない場合も含め、常にここで止める
 
 	# 4方向移動・その他
-	if   kc == key_bindings.get("move_left",  KEY_LEFT):  _move_or_dash(Vector2i(-1,  0), is_dash)
-	elif kc == key_bindings.get("move_right", KEY_RIGHT): _move_or_dash(Vector2i( 1,  0), is_dash)
-	elif kc == key_bindings.get("move_up",    KEY_UP):    _move_or_dash(Vector2i( 0, -1), is_dash)
-	elif kc == key_bindings.get("move_down",  KEY_DOWN):  _move_or_dash(Vector2i( 0,  1), is_dash)
+	if   kc == key_bindings.get("move_left",  KEY_LEFT):  _move_or_dash(Vector2i(-1,  0), is_dash, is_idash)
+	elif kc == key_bindings.get("move_right", KEY_RIGHT): _move_or_dash(Vector2i( 1,  0), is_dash, is_idash)
+	elif kc == key_bindings.get("move_up",    KEY_UP):    _move_or_dash(Vector2i( 0, -1), is_dash, is_idash)
+	elif kc == key_bindings.get("move_down",  KEY_DOWN):  _move_or_dash(Vector2i( 0,  1), is_dash, is_idash)
 	elif kc == key_bindings.get("wait",       KEY_SPACE): _player_wait_or_descend()
 	elif kc == key_bindings.get("inventory",  KEY_I):     InventoryUI.open(self)
 	elif kc == key_bindings.get("pickup",     KEY_G):     _try_pickup()
+	elif kc == key_bindings.get("bestiary",   KEY_Z):     BestiaryUI.open(self)
 
-## ダッシュ判定付きの移動ルーター
-func _move_or_dash(dir: Vector2i, dash: bool) -> void:
-	if dash:
+## ダッシュ/i-ダッシュ判定付きの移動ルーター（i-ダッシュが通常ダッシュより優先）
+func _move_or_dash(dir: Vector2i, dash: bool, idash: bool = false) -> void:
+	if idash:
+		_try_i_dash(dir)
+	elif dash:
 		_try_player_dash(dir)
 	else:
 		_try_player_move(dir)
@@ -738,6 +935,14 @@ func _try_player_move(dir: Vector2i, dash: bool = false) -> bool:
 	# 壁チェック
 	if not generator.is_walkable(new_pos.x, new_pos.y):
 		return false
+	# 仲間がいる: ダッシュ中は停止、通常は位置入れ替え
+	var swap_comp = CompanionAI.at(self, new_pos)
+	if swap_comp != null:
+		if dash:
+			return false
+		# 仲間の位置を自分の元位置に
+		swap_comp["grid_pos"] = p_grid
+		swap_comp["node"].call("set_grid", p_grid.x, p_grid.y)
 	# ダッシュ時: 未発動のワナを踏むか & MH 発動前の状態を記録
 	var will_trigger_trap: bool = false
 	if dash:
@@ -752,6 +957,8 @@ func _try_player_move(dir: Vector2i, dash: bool = false) -> bool:
 	_player_node.call("set_grid", p_grid.x, p_grid.y)
 	# BGM切り替え・入退場メッセージ・MH発動
 	_update_area_bgm()
+	# MH 眠り敵：プレイヤー隣接で確定起床
+	_wake_adjacent_mh_enemies()
 	# ワナチェック
 	_check_trap(p_grid)
 	# 店アイテム踏んだ時：名前と価格を表示
@@ -844,6 +1051,163 @@ func _try_player_dash(dir: Vector2i) -> void:
 		if not _try_player_move(dir, true):
 			break
 
+## i-ダッシュ（便利移動）：方向キー+i-ダッシュキーで発動
+## - 部屋内：指定方向側にあるアイテム/金/階段のうち最寄りへ最短経路で移動
+##           （方向側になければ最寄りの通路出口へ）
+## - 通路内：指定方向を起点に曲がり角を自動追従し、次の部屋入口まで進む
+## 停止条件は通常ダッシュと同じ（敵隣接・被弾・ワナ・MH発動等）
+func _try_i_dash(dir: Vector2i) -> void:
+	if dir == Vector2i.ZERO:
+		return
+	var room_idx: int = _room_index_of(p_grid)
+	if room_idx == -1:
+		_i_dash_corridor(dir)
+	else:
+		_i_dash_in_room(room_idx, dir)
+
+## 通路モード：指定方向を起点に曲がり角を自動追従しながら進む
+func _i_dash_corridor(start_dir: Vector2i) -> void:
+	var prev_dir: Vector2i = start_dir
+	var max_steps: int = 100
+	while max_steps > 0:
+		max_steps -= 1
+		var dir: Vector2i = _i_dash_next_corridor_dir(p_grid, prev_dir)
+		if dir == Vector2i.ZERO:
+			break
+		if not _try_player_move(dir, true):
+			break
+		prev_dir = dir
+
+## 通路の次の進行方向を決定する（行き止まりや分岐は Vector2i.ZERO を返す）
+func _i_dash_next_corridor_dir(pos: Vector2i, prev_dir: Vector2i) -> Vector2i:
+	var reject: Vector2i = -prev_dir  # 来た方向へ戻るのは禁止
+	var options: Array = []
+	for d: Vector2i in [Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1)]:
+		if d == reject:
+			continue
+		var np: Vector2i = pos + d
+		if generator.is_walkable(np.x, np.y):
+			options.append(d)
+	if options.size() == 1:
+		return options[0]
+	# 分岐点：直進可能なら直進、それ以外は停止
+	if options.size() >= 2 and prev_dir != Vector2i.ZERO:
+		for opt: Vector2i in options:
+			if opt == prev_dir:
+				return opt
+	return Vector2i.ZERO
+
+## 部屋モード：BFS で全候補の距離を計算 → 方向重みをかけたスコアで最良を選ぶ
+## 優先度: 前方のアイテム/金/階段 > 前方の通路出口。前方に何もなければ停止。
+func _i_dash_in_room(room_idx: int, dir: Vector2i) -> void:
+	var room: Rect2i = generator.rooms[room_idx]
+	# BFS で全到達マスの距離・親を求める
+	var bfs: Dictionary = _i_dash_bfs_all(p_grid)
+	var distances: Dictionary = bfs["distances"]
+	var parents: Dictionary    = bfs["parents"]
+	# 前方（入力方向と 90°以内）のアイテム/金/階段を収集
+	var forward_items: Array[Vector2i] = []
+	for fi in floor_items:
+		var fp: Vector2i = fi["grid_pos"] as Vector2i
+		if room.has_point(fp) and distances.has(fp) and _i_dash_alignment(fp, dir) >= 0.0:
+			forward_items.append(fp)
+	for gp in gold_piles:
+		var gpp: Vector2i = gp["grid_pos"] as Vector2i
+		if room.has_point(gpp) and distances.has(gpp) and _i_dash_alignment(gpp, dir) >= 0.0:
+			forward_items.append(gpp)
+	if room.has_point(generator.stairs_pos) \
+			and distances.has(generator.stairs_pos) \
+			and _i_dash_alignment(generator.stairs_pos, dir) >= 0.0:
+		forward_items.append(generator.stairs_pos)
+	# 前方にアイテム類がなければ、前方の通路出口にフォールバック
+	var candidates: Array[Vector2i] = forward_items
+	if candidates.is_empty():
+		for ex: Vector2i in _i_dash_room_exits(room):
+			if distances.has(ex) and _i_dash_alignment(ex, dir) >= 0.0:
+				candidates.append(ex)
+	if candidates.is_empty():
+		add_message("その方向に目的地はない。")
+		return
+	# 各候補を距離×方向ペナルティでスコア化し、最小を選ぶ
+	var best_pos: Vector2i  = Vector2i(-99999, -99999)
+	var best_score: float   = INF
+	for tpos: Vector2i in candidates:
+		var d: int = distances[tpos]
+		var score: float = _i_dash_target_score(tpos, dir, d)
+		if score < best_score:
+			best_score = score
+			best_pos   = tpos
+	if best_pos.x == -99999:
+		add_message("そこへは行けない。")
+		return
+	# 親ポインタから経路を復元
+	var path: Array = []
+	var cur: Vector2i = best_pos
+	while cur != p_grid:
+		path.push_front(cur)
+		cur = parents[cur]
+	for next_pos: Vector2i in path:
+		var step_dir: Vector2i = next_pos - p_grid
+		if not _try_player_move(step_dir, true):
+			break
+
+## ターゲットのスコア計算（低いほど優先）
+## score = 距離 × (2 − 方向アラインメント)
+## - 指定方向とピッタリ一致: 係数 ×1（距離そのまま）
+## - 垂直（90°外れ）:          係数 ×2
+func _i_dash_target_score(pos: Vector2i, dir: Vector2i, distance: int) -> float:
+	var align: float = _i_dash_alignment(pos, dir)
+	return float(distance) * (2.0 - align)
+
+## cos(θ)：ターゲット方向ベクトルと入力方向の内積を正規化。範囲 [-1, 1]
+## 1=同方向, 0=垂直, -1=真後ろ。自分位置のときは 0 を返す
+func _i_dash_alignment(pos: Vector2i, dir: Vector2i) -> float:
+	var v: Vector2i = pos - p_grid
+	var v_len: float = sqrt(float(v.x * v.x + v.y * v.y))
+	if v_len < 0.001:
+		return 0.0
+	var dir_len: float = sqrt(float(dir.x * dir.x + dir.y * dir.y))
+	return float(v.x * dir.x + v.y * dir.y) / (v_len * dir_len)
+
+## 4方向BFSで start から到達可能な全マスの距離と親ポインタを返す
+func _i_dash_bfs_all(start: Vector2i) -> Dictionary:
+	var distances: Dictionary = {start: 0}
+	var parents:   Dictionary = {start: start}
+	var queue: Array = [start]
+	while not queue.is_empty():
+		var cur: Vector2i = queue.pop_front()
+		var d: int = distances[cur]
+		for dd: Vector2i in [Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1)]:
+			var np: Vector2i = cur + dd
+			if distances.has(np):
+				continue
+			if not generator.is_walkable(np.x, np.y):
+				continue
+			distances[np] = d + 1
+			parents[np]   = cur
+			queue.append(np)
+	return {"distances": distances, "parents": parents}
+
+## 部屋の出口から続く通路側の1マス目を返す（BFS のターゲットに使用）
+## 部屋内マスを返すと「プレイヤーが既に出口マスにいる」ケースで経路ゼロになるため通路側で返す
+func _i_dash_room_exits(room: Rect2i) -> Dictionary:
+	var out: Dictionary = {}
+	for y in range(room.position.y, room.end.y):
+		for x in range(room.position.x, room.end.x):
+			var on_border := (x == room.position.x or x == room.end.x - 1
+					or y == room.position.y or y == room.end.y - 1)
+			if not on_border:
+				continue
+			var p: Vector2i = Vector2i(x, y)
+			if not generator.is_walkable(p.x, p.y):
+				continue
+			for d: Vector2i in [Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1)]:
+				var np: Vector2i = p + d
+				if generator.is_walkable(np.x, np.y) and not room.has_point(np):
+					out[np] = true
+					break
+	return out
+
 func _player_wait_or_descend() -> void:
 	if generator.get_tile(p_grid.x, p_grid.y) == DungeonGenerator.TILE_STAIRS:
 		_try_descend()
@@ -909,6 +1273,9 @@ func _pickup_item(fi: Dictionary) -> void:
 	_play_se("pickup")
 
 func _end_player_turn() -> void:
+	# 会話中はターン進行を遅延（会話終了時に Combat._finish_recruit から再呼び出し）
+	if game_state == "dialog":
+		return
 	# 満腹度
 	turn_count += 1
 	if turn_count % HUNGER_RATE == 0:
@@ -969,6 +1336,8 @@ func _end_player_turn() -> void:
 		if p_paralyzed_turns == 0:
 			add_message("麻痺が解けた。")
 			_refresh_player_status_visual()
+	# 仲間ターン（プレイヤー直後・敵ターン直前）
+	CompanionAI.run_turns(self)
 	# 敵の追加スポーン（50ターンに1体、視界外）
 	if turn_count % 50 == 0:
 		EnemyAI.spawn_wandering(self)
