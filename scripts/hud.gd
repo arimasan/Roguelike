@@ -12,7 +12,7 @@ const MSG_LINES := 6        # 表示するメッセージ行数
 var _icon_cache: Dictionary = {}
 
 func _ready() -> void:
-	for type_int in range(7):
+	for type_int in Assets.ITEM_TYPES.keys():
 		var path: String = Assets.item_type_sprite(type_int)
 		if not path.is_empty() and ResourceLoader.exists(path):
 			var tex := load(path) as Texture2D
@@ -28,9 +28,19 @@ func _draw() -> void:
 		"inventory":
 			_draw_hud_base(vp)
 			_draw_inventory(vp, false)
+		"inv_action":
+			_draw_hud_base(vp)
+			_draw_inventory(vp, false)
+			_draw_action_submenu(vp)
+		"throw_aim", "throw_anim":
+			_draw_hud_base(vp)
+			_draw_throw_overlay(vp)
 		"storage_select":
 			_draw_hud_base(vp)
 			_draw_inventory(vp, true)
+		"storage_pot":
+			_draw_hud_base(vp)
+			_draw_storage_pot(vp)
 		"shop":
 			_draw_hud_base(vp)
 			_draw_shop(vp)
@@ -92,7 +102,7 @@ func _draw_hud_base(vp: Vector2) -> void:
 		"EXP %d/%d" % [gref.p_exp, gref.p_exp_next], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.75, 0.75, 0.75))
 	sy += 20
 	draw_string(font, Vector2(sx, sy),
-		"ATK %d  DEF %d" % [gref.calc_atk(), gref.calc_def()], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.85, 0.85, 0.85))
+		"ATK %d  DEF %d" % [Combat.calc_atk(gref), Combat.calc_def(gref)], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.85, 0.85, 0.85))
 
 	# ── 装備欄 ───────────────────────────────────────────
 	var ex := sx + 160.0
@@ -254,12 +264,23 @@ func _draw_inventory(vp: Vector2, storage_mode: bool = false) -> void:
 
 	var title_x := vp.x / 2.0 - 120.0
 	var title_y := 40.0
-	var title_text := "─── インベントリ ───" if not storage_mode else "─── 何をしまいますか？ ───"
+	var title_text := "─── インベントリ ───"
+	if storage_mode:
+		var pot_cap := 0
+		var pot_cnt := 0
+		for it in gref.p_inventory:
+			if it.get("_iid", -1) == gref._storage_pot_iid:
+				pot_cap = int(it.get("capacity", 0))
+				pot_cnt = (it.get("contents", []) as Array).size()
+				break
+		title_text = "─── 何をしまいますか？ （%d/%d） ───" % [pot_cnt, pot_cap]
 	var title_color := Color(0.95, 0.85, 0.25) if not storage_mode else Color(0.60, 0.90, 1.00)
 	draw_string(font, Vector2(title_x, title_y), title_text,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 20, title_color)
 
-	var inv: Array = gref.p_inventory
+	# storage_select はインベントリのみを対象。通常インベントリは足元アイテムも末尾に含める。
+	var inv: Array = gref.p_inventory if storage_mode else gref._inventory_display_list()
+	var inv_owned_size: int = (gref.p_inventory as Array).size()
 	if inv.is_empty():
 		draw_string(font, Vector2(title_x, title_y + 40),
 			"（アイテムなし）", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.6, 0.6, 0.6))
@@ -268,23 +289,27 @@ func _draw_inventory(vp: Vector2, storage_mode: bool = false) -> void:
 			var item:  Dictionary = inv[i]
 			var iy := title_y + 36 + i * 26
 			var selected: bool = (i == gref.inv_cursor)
+			var is_floor_entry: bool = not storage_mode and i >= inv_owned_size
 			# storage_select中、箱自身はグレーアウト
 			var is_pot_self: bool = storage_mode and item.get("_iid", -2) == gref._storage_pot_iid
 			var bg_col := Color(0.20, 0.25, 0.35, 0.85) if selected else Color(0, 0, 0, 0)
 			draw_rect(Rect2(title_x - 8, iy - 18, 500, 24), bg_col)
-			var tag := _equip_tag(gref, item)
+			var tag := "[床]" if is_floor_entry else _equip_tag(gref, item)
 			var col: Color
 			if is_pot_self:
 				col = Color(0.45, 0.45, 0.45)
 			elif selected:
 				col = Color.WHITE
+			elif is_floor_entry:
+				col = Color(0.70, 0.90, 0.70)   # 薄緑で床アイテムを示す
 			else:
 				col = ItemData.type_color(item.get("type", 0))
-			# 保存の箱は中身の個数を表示
+			# 保存の箱は中身/容量を表示
 			var name_str: String = item.get("name", "?")
 			if item.get("effect", "") == "storage":
 				var cnt: int = item.get("contents", []).size()
-				name_str = "%s（%d個入り）" % [name_str, cnt]
+				var cap: int = int(item.get("capacity", 0))
+				name_str = "%s（%d/%d）" % [name_str, cnt, cap]
 			# アイコン描画（20×20）
 			const ICON_SIZE := 20
 			var icon_tex: Texture2D = _icon_cache.get(int(item.get("type", -1)))
@@ -308,12 +333,113 @@ func _draw_inventory(vp: Vector2, storage_mode: bool = false) -> void:
 	# 操作ガイド
 	var gy := vp.y - BAR_H - 30.0
 	draw_rect(Rect2(0, gy - 4, vp.x, 30), Color(0, 0, 0, 0.6))
-	var guide := "[↑↓] 選択   [Enter/Z] 使う/装備   [D] 捨てる   [I/Esc] 閉じる"
+	var guide := "[↑↓] 選択   [Enter/Z] メニュー   [Shift+Enter] 即使用   [D] 捨てる   [I/Esc] 閉じる"
 	if storage_mode:
-		guide = "[↑↓] 選択   [Enter/Z] しまう   [Esc] キャンセル"
+		guide = "[↑↓] 選択   [Enter/Z] しまう   [Esc] 戻る"
 	draw_string(font, Vector2(8, gy + 16),
 		guide,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.70, 0.70, 0.70))
+
+## 保存の箱：中身リスト表示画面
+func _draw_storage_pot(vp: Vector2) -> void:
+	var font := ThemeDB.fallback_font
+	var gref := game_ref
+	# 現在操作中の箱を取得
+	var pot: Dictionary = {}
+	for it in gref.p_inventory:
+		if it.get("_iid", -1) == gref._storage_pot_iid:
+			pot = it
+			break
+	# オーバーレイ
+	draw_rect(Rect2(0, 0, vp.x, vp.y - BAR_H), Color(0, 0, 0, 0.80))
+
+	var title_x := vp.x / 2.0 - 160.0
+	var title_y := 40.0
+	var contents: Array = pot.get("contents", [])
+	var capacity: int = int(pot.get("capacity", 0))
+	var title_text := "─── %s （%d/%d） ───" % [pot.get("name", "保存の箱"), contents.size(), capacity]
+	draw_string(font, Vector2(title_x, title_y), title_text,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color(0.60, 0.90, 1.00))
+
+	if contents.is_empty():
+		draw_string(font, Vector2(title_x, title_y + 40),
+			"（空っぽ）", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.6, 0.6, 0.6))
+	else:
+		for i in contents.size():
+			var item: Dictionary = contents[i]
+			var iy := title_y + 36 + i * 26
+			var selected: bool = (i == gref.storage_cursor)
+			var bg_col := Color(0.20, 0.25, 0.35, 0.85) if selected else Color(0, 0, 0, 0)
+			draw_rect(Rect2(title_x - 8, iy - 18, 500, 24), bg_col)
+			var col: Color = Color.WHITE if selected else ItemData.type_color(item.get("type", 0))
+			const ICON_SIZE := 20
+			var icon_tex: Texture2D = _icon_cache.get(int(item.get("type", -1)))
+			if icon_tex != null:
+				draw_texture_rect(icon_tex,
+					Rect2(title_x, iy - ICON_SIZE + 4, ICON_SIZE, ICON_SIZE), false, Color.WHITE)
+			else:
+				draw_string(font, Vector2(title_x, iy),
+					ItemData.type_symbol(item.get("type", 0)),
+					HORIZONTAL_ALIGNMENT_LEFT, ICON_SIZE, 15, col)
+			draw_string(font,
+				Vector2(title_x + ICON_SIZE + 4, iy),
+				item.get("name", "?"),
+				HORIZONTAL_ALIGNMENT_LEFT, 466, 15, col)
+
+	# 操作ガイド
+	var gy := vp.y - BAR_H - 30.0
+	draw_rect(Rect2(0, gy - 4, vp.x, 30), Color(0, 0, 0, 0.6))
+	var guide := "[↑↓] 選択   [Enter/Z] 取り出す   [P] しまう   [I/Esc] 閉じる"
+	draw_string(font, Vector2(8, gy + 16),
+		guide, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.70, 0.70, 0.70))
+
+## アイテムアクション選択のサブメニュー
+func _draw_action_submenu(vp: Vector2) -> void:
+	var font := ThemeDB.fallback_font
+	var gref := game_ref
+	var list: Array = gref._action_list
+	if list.is_empty():
+		return
+	# 選択行の位置に合わせてパネルを表示
+	var title_x: float = vp.x / 2.0 - 120.0
+	var title_y: float = 40.0
+	var inv_cur: int   = int(gref.inv_cursor)
+	var act_cur: int   = int(gref.action_cursor)
+	var row_y:   float = title_y + 36.0 + float(inv_cur) * 26.0
+	var panel_x: float = title_x + 520.0
+	var panel_w: float = 180.0
+	var panel_h: float = float(list.size() * 26 + 16)
+	var panel_y: float = row_y - 22.0
+	# 画面下にはみ出す場合は上へ寄せる
+	if panel_y + panel_h > vp.y - BAR_H - 40.0:
+		panel_y = vp.y - BAR_H - 40.0 - panel_h
+	draw_rect(Rect2(panel_x, panel_y, panel_w, panel_h), Color(0.08, 0.10, 0.15, 0.95))
+	draw_rect(Rect2(panel_x, panel_y, panel_w, panel_h), Color(0.55, 0.70, 0.90), false, 1.0)
+	for i in list.size():
+		var entry: Array = list[i]
+		var label: String = entry[1]
+		var ry: float = panel_y + 18.0 + float(i) * 26.0
+		var selected: bool = (i == act_cur)
+		if selected:
+			draw_rect(Rect2(panel_x + 4.0, ry - 15.0, panel_w - 8.0, 22.0),
+				Color(0.25, 0.35, 0.55, 0.85))
+		var col: Color = Color.WHITE if selected else Color(0.80, 0.80, 0.85)
+		draw_string(font, Vector2(panel_x + 16.0, ry), label,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 15, col)
+
+## 投擲狙い中／アニメ中の画面上部ガイド
+func _draw_throw_overlay(vp: Vector2) -> void:
+	var font := ThemeDB.fallback_font
+	var gref := game_ref
+	var bar_h := 36.0
+	draw_rect(Rect2(0, 0, vp.x, bar_h), Color(0, 0, 0, 0.60))
+	var txt: String
+	if gref.game_state == "throw_aim":
+		txt = "方向を選んで [Enter/Z] で投げる  [Esc] キャンセル"
+	else:
+		txt = "投擲中…"
+	draw_string(font, Vector2(12, 24), txt,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1.0, 0.95, 0.4))
 
 func _equip_tag(gref: Node, item: Dictionary) -> String:
 	var iid: int = item.get("_iid", -2)
@@ -504,10 +630,10 @@ func _draw_game_over(vp: Vector2) -> void:
 	draw_string(font, Vector2(lx + 80, cy),  "%d / %d" % [g.p_hp, g.p_hp_max], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
 	cy += row_h
 	draw_string(font, Vector2(lx, cy),       "攻撃力",   HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
-	draw_string(font, Vector2(lx + 80, cy),  "%d" % g.calc_atk(), HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
+	draw_string(font, Vector2(lx + 80, cy),  "%d" % Combat.calc_atk(g), HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
 	cy += row_h
 	draw_string(font, Vector2(lx, cy),       "防御力",   HORIZONTAL_ALIGNMENT_LEFT, -1, 14, label_col)
-	draw_string(font, Vector2(lx + 80, cy),  "%d" % g.calc_def(), HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
+	draw_string(font, Vector2(lx + 80, cy),  "%d" % Combat.calc_def(g), HORIZONTAL_ALIGNMENT_LEFT, -1, 14, value_col)
 
 	# 右列（cy をリセット）
 	cy = py + 36.0 + 44.0 + 18.0 + 22.0

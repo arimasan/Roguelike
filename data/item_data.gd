@@ -75,7 +75,7 @@ const ALL: Array = [
 	# ── 箱 ──────────────────────────────────────────────────
 	{"id":"pot_heal",      "name":"回復の箱",  "type":TYPE_POT, "effect":"heal",     "uses":3, "weight":22},
 	{"id":"pot_poison",    "name":"毒の箱",    "type":TYPE_POT, "effect":"poison",   "uses":3, "weight":15, "se":"curse"},
-	{"id":"pot_storage",   "name":"保存の箱",  "type":TYPE_POT, "effect":"storage",  "uses":5, "weight":12},
+	{"id":"pot_storage",   "name":"保存の箱",  "type":TYPE_POT, "effect":"storage",  "weight":12},
 	{"id":"pot_blind",     "name":"盲目の箱",  "type":TYPE_POT, "effect":"blind",    "uses":3, "weight":10, "se":"curse"},
 	{"id":"pot_strength",  "name":"強化の箱",  "type":TYPE_POT, "effect":"strength", "uses":2, "weight":8},
 	# ── 指輪 ────────────────────────────────────────────────
@@ -85,6 +85,7 @@ const ALL: Array = [
 	{"id":"ring_def",      "name":"防御指輪",  "type":TYPE_RING, "def":5,                "weight":14},
 	{"id":"ring_detect",   "name":"探知指輪",  "type":TYPE_RING, "effect":"detection",    "weight":9},
 	{"id":"ring_exp",      "name":"経験指輪",  "type":TYPE_RING, "effect":"exp_boost",    "weight":8},
+	{"id":"ring_trap_sense","name":"よくみえの腕輪","type":TYPE_RING, "effect":"trap_sense","weight":9},
 	# ── 杖 ──────────────────────────────────────────────────
 	{"id":"staff_fire",      "name":"火炎の杖",       "type":TYPE_STAFF, "effect":"fire",      "uses":5, "weight":14, "se":"fire"},
 	{"id":"staff_thunder",   "name":"雷の杖",         "type":TYPE_STAFF, "effect":"thunder",   "uses":4, "weight":12, "se":"lightning"},
@@ -105,7 +106,11 @@ static func shop_price(item: Dictionary) -> int:
 		TYPE_FOOD:   base = max(20,  item.get("fullness", 0) / 2  + 15)
 		TYPE_POTION: base = max(30,  item.get("heal", 0) + item.get("atk_up", 0) * 20 + 30)
 		TYPE_SCROLL: base = 80
-		TYPE_POT:    base = max(60,  item.get("uses",     1) * 25 + 30)
+		TYPE_POT:
+			if item.get("effect", "") == "storage":
+				base = max(80, item.get("capacity", 3) * 30 + 50)
+			else:
+				base = max(60, item.get("uses", 1) * 25 + 30)
 		TYPE_RING:   base = 150
 		TYPE_STAFF:  base = max(60,  item.get("uses",     1) * 30 + 40)
 	if item.get("cursed", false):
@@ -127,5 +132,8 @@ static func random_item(_floor_num: int) -> Dictionary:
 	for item in ALL:
 		acc += item.get("weight", 10)
 		if roll < acc:
-			return item.duplicate(true)
+			var out: Dictionary = item.duplicate(true)
+			if out.get("effect", "") == "storage":
+				out["capacity"] = randi_range(3, 6)
+			return out
 	return ALL[0].duplicate(true)

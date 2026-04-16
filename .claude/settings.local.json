@@ -8,7 +8,8 @@
       "Bash(grep -l \"valid=false\" \"c:/Users/bearf/OneDrive/ドキュメント/newpj/assets/sprites/items/\"*.import)",
       "Bash(grep -l \"valid=false\" \"c:/Users/bearf/OneDrive/ドキュメント/newpj/assets/sprites/enemies/\"*.import)",
       "Bash(claude auth *)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(wc -l \"c:/Users/kazuh/Roguelike/scenes/game.gd\" \"c:/Users/kazuh/Roguelike/scripts/\"*.gd \"c:/Users/kazuh/Roguelike/data/\"*.gd)"
     ]
   }
 }
