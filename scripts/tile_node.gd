@@ -12,6 +12,13 @@ var font_size: int    = 20
 
 var _sprite: Sprite2D = null
 
+# ─── 状態異常ビジュアル ─────────────────────────────────────────
+var _base_modulate: Color  = Color.WHITE   # flash後に戻る基準色
+var _status_text:   String = ""            # バッジに表示する1文字
+var _status_color:  Color  = Color.WHITE   # バッジ・tintの色
+
+var _flash_tween: Tween = null             # 実行中のflashツイーン参照
+
 # ─── セットアップ ─────────────────────────────────────────────
 func setup(sym: String, bg: Color, fg: Color = Color.WHITE, fs: int = 20) -> void:
 	symbol    = sym
@@ -46,7 +53,9 @@ func set_sprite(path: String) -> void:
 func _draw() -> void:
 	var half := TILE_SIZE / 2
 	if _sprite != null and is_instance_valid(_sprite) and _sprite.texture != null:
-		# スプライトあり: 背景を描かずそのまま返す（透過ピクセルはマップタイルが透けて見える）
+		# スプライトあり: 背景なし（透過ピクセルはマップが透ける）
+		if _status_text != "":
+			_draw_status_badge()
 		return
 	# フォールバック: シンボル文字描画
 	draw_rect(Rect2(-half, -half, TILE_SIZE, TILE_SIZE), bg_color)
@@ -61,26 +70,64 @@ func _draw() -> void:
 			TILE_SIZE,
 			font_size,
 			fg_color)
+	if _status_text != "":
+		_draw_status_badge()
 
-## 指定色で一瞬フラッシュして元に戻る
+## タイル左上に状態異常バッジを描画（11×10 の小矩形）
+func _draw_status_badge() -> void:
+	var bx := float(-TILE_SIZE) / 2.0
+	var by := float(-TILE_SIZE) / 2.0
+	var font := ThemeDB.fallback_font
+	draw_rect(Rect2(bx, by, 11.0, 10.0), Color(0.0, 0.0, 0.0, 0.80))
+	draw_rect(Rect2(bx, by, 11.0, 10.0), _status_color, false, 1.0)
+	draw_string(font, Vector2(bx + 1.0, by + 9.0),
+		_status_text, HORIZONTAL_ALIGNMENT_LEFT, 11, 9, _status_color)
+
+## 指定色で一瞬フラッシュして元に戻る（_base_modulate へ復元）
 func flash(color: Color = Color(1.0, 0.2, 0.2)) -> void:
+	# 前のフラッシュが残っていればキャンセル
+	if _flash_tween != null and _flash_tween.is_valid():
+		_flash_tween.kill()
 	if _sprite != null and is_instance_valid(_sprite):
 		_sprite.modulate = color
-		var tw := create_tween()
-		tw.tween_callback(func() -> void:
-			if not is_instance_valid(self) or not is_instance_valid(_sprite): return
-			_sprite.modulate = Color.WHITE
-		).set_delay(0.12)
+		_flash_tween = create_tween()
+		_flash_tween.tween_callback(_restore_sprite_modulate).set_delay(0.12)
 	else:
 		var orig := bg_color
 		bg_color = color
 		queue_redraw()
-		var tw := create_tween()
-		tw.tween_callback(func() -> void:
-			if not is_instance_valid(self): return
-			bg_color = orig
-			queue_redraw()
-		).set_delay(0.12)
+		_flash_tween = create_tween()
+		_flash_tween.tween_callback(_restore_bg_color.bind(orig)).set_delay(0.12)
+
+func _restore_sprite_modulate() -> void:
+	if is_instance_valid(_sprite):
+		_sprite.modulate = _base_modulate
+
+func _restore_bg_color(orig: Color) -> void:
+	bg_color = orig
+	queue_redraw()
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		if _flash_tween != null and _flash_tween.is_valid():
+			_flash_tween.kill()
+
+## 状態異常ビジュアルを設定（バッジ表示＋スプライトtint）
+func set_status(text: String, tint: Color) -> void:
+	_status_text  = text
+	_status_color = tint
+	_base_modulate = tint
+	if _sprite != null and is_instance_valid(_sprite):
+		_sprite.modulate = tint
+	queue_redraw()
+
+## 状態異常ビジュアルをクリア
+func clear_status() -> void:
+	_status_text   = ""
+	_base_modulate = Color.WHITE
+	if _sprite != null and is_instance_valid(_sprite):
+		_sprite.modulate = Color.WHITE
+	queue_redraw()
 
 ## グリッド座標からワールド座標へ変換してノードを移動
 func set_grid(gx: int, gy: int) -> void:

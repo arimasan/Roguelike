@@ -20,12 +20,20 @@ var player_start: Vector2i = Vector2i.ZERO
 var stairs_pos:   Vector2i = Vector2i.ZERO
 var enemy_spawns: Array = [] # Array[Vector2i]
 var item_spawns:  Array = [] # Array[Vector2i]
+var trap_spawns:  Array = [] # Array[Vector2i]
 
 # ─── 店 ───────────────────────────────────────────────────
 var has_shop:            bool      = false
 var shop_room:           Rect2i    = Rect2i()
 var shop_keeper_pos:     Vector2i  = Vector2i.ZERO
 var shop_item_positions: Array     = []   # Array[Vector2i]
+
+# ─── モンスターハウス ──────────────────────────────────────
+var has_monster_house:          bool    = false
+var monster_house_room:         Rect2i  = Rect2i()
+var monster_house_enemy_spawns: Array   = []   # Array[Vector2i]
+var monster_house_item_spawns:  Array   = []   # Array[Vector2i]
+var monster_house_trap_pos:     Array   = []   # Array[Vector2i]
 
 # ─── 生成メイン ───────────────────────────────────────────
 var _floor_num: int = 0   # generate() から各サブ関数で参照するために保持
@@ -36,7 +44,8 @@ func generate(floor_num: int) -> void:
 	_place_rooms()
 	_connect_all_rooms()
 	_place_stairs_and_player()
-	_try_setup_shop()          # スポーン点確定より先に店を確保
+	_try_setup_shop()           # スポーン点確定より先に特殊部屋を確保
+	_try_setup_monster_house()
 	_pick_spawn_points(floor_num)
 
 func _init_map() -> void:
@@ -44,10 +53,16 @@ func _init_map() -> void:
 	rooms = []
 	enemy_spawns = []
 	item_spawns  = []
+	trap_spawns  = []
 	has_shop            = false
 	shop_room           = Rect2i()
 	shop_keeper_pos     = Vector2i.ZERO
 	shop_item_positions = []
+	has_monster_house          = false
+	monster_house_room         = Rect2i()
+	monster_house_enemy_spawns = []
+	monster_house_item_spawns  = []
+	monster_house_trap_pos     = []
 	for y in MAP_H:
 		var row := []
 		for x in MAP_W:
@@ -102,11 +117,13 @@ func _pick_spawn_points(floor_num: int) -> void:
 		for p in shop_item_positions:
 			shop_reserved.append(p)
 
-	# 敵: 部屋ごとに0〜2体（最初の部屋・最後の部屋・店部屋は除く）
+	# 敵: 部屋ごとに0〜2体（最初・最後・店・MH部屋は除く）
 	for i in range(1, rooms.size() - 1):
 		var room: Rect2i = rooms[i]
 		if has_shop and room == shop_room:
-			continue   # 店部屋には敵を出さない
+			continue
+		if has_monster_house and room == monster_house_room:
+			continue   # MH部屋は独自スポーン
 		var num_enemies: int = randi_range(0, min(2, 1 + floor_num / 5))
 		for _j in num_enemies:
 			var p := _rand_floor(room)
@@ -115,8 +132,16 @@ func _pick_spawn_points(floor_num: int) -> void:
 		# アイテム: 1部屋に0〜1個
 		if randi() % 3 != 0:
 			var p := _rand_floor(room)
-			if p != Vector2i(-1, -1) and p not in shop_reserved:
+			if p != Vector2i(-1, -1) and p not in shop_reserved \
+					and p not in item_spawns and p not in trap_spawns:
 				item_spawns.append(p)
+		# ワナ: 1部屋に0〜1個（約40%）
+		if randi() % 5 < 2:
+			var p := _rand_floor(room)
+			if p != Vector2i(-1, -1) and p not in shop_reserved \
+					and p not in item_spawns and p not in trap_spawns \
+					and p not in enemy_spawns:
+				trap_spawns.append(p)
 	# スタート部屋にも少し
 	var sp := _rand_floor(rooms[0])
 	if sp != Vector2i(-1, -1) and sp != player_start and sp not in shop_reserved:
@@ -180,6 +205,60 @@ func _try_setup_shop() -> void:
 			shop_keeper_pos = fallback[0] as Vector2i
 		else:
 			shop_keeper_pos = shop_item_positions[0] as Vector2i
+
+func _try_setup_monster_house() -> void:
+	if rooms.size() < 3 or randf() >= DungeonConfig.monster_house_chance(_floor_num):
+		return
+	# 最初・最後・店以外の部屋から候補を選ぶ
+	var candidates: Array = []
+	for i in range(1, rooms.size() - 1):
+		if has_shop and rooms[i] == shop_room:
+			continue
+		candidates.append(rooms[i])
+	if candidates.is_empty():
+		return
+
+	monster_house_room = candidates[randi() % candidates.size()] as Rect2i
+	has_monster_house  = true
+
+	# 部屋内のフロアタイルをすべて収集してシャッフル
+	var floor_tiles: Array = []
+	for y in range(monster_house_room.position.y, monster_house_room.end.y):
+		for x in range(monster_house_room.position.x, monster_house_room.end.x):
+			var t: int = map[y][x]
+			if t == TILE_FLOOR or t == TILE_SHOP_FLOOR:
+				floor_tiles.append(Vector2i(x, y))
+	floor_tiles.shuffle()
+
+	if floor_tiles.size() < 5:
+		has_monster_house = false
+		return
+
+	var idx: int = 0
+
+	# 敵スポーン: 床タイルの 50〜65%（最大 15 体）
+	var enemy_count: int = min(int(floor_tiles.size() * randf_range(0.50, 0.65)), 15)
+	for _i in enemy_count:
+		if idx >= floor_tiles.size():
+			break
+		monster_house_enemy_spawns.append(floor_tiles[idx] as Vector2i)
+		idx += 1
+
+	# アイテム: 3〜5 個
+	var item_count: int = min(randi_range(3, 5), floor_tiles.size() - idx)
+	for _i in item_count:
+		if idx >= floor_tiles.size():
+			break
+		monster_house_item_spawns.append(floor_tiles[idx] as Vector2i)
+		idx += 1
+
+	# ワナ: 3〜6 個
+	var trap_count: int = min(randi_range(3, 6), floor_tiles.size() - idx)
+	for _i in trap_count:
+		if idx >= floor_tiles.size():
+			break
+		monster_house_trap_pos.append(floor_tiles[idx] as Vector2i)
+		idx += 1
 
 # ─── タイル操作ヘルパー ────────────────────────────────────
 func _carve_room(r: Rect2i) -> void:

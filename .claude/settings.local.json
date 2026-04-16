@@ -3,7 +3,12 @@
     "allow": [
       "Bash(python3 -c ' *)",
       "Bash(powershell -Command ' *)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(grep -l \"valid=false\" \"c:/Users/bearf/OneDrive/ドキュメント/newpj/assets/sprites/shop/\"*.import)",
+      "Bash(grep -l \"valid=false\" \"c:/Users/bearf/OneDrive/ドキュメント/newpj/assets/sprites/items/\"*.import)",
+      "Bash(grep -l \"valid=false\" \"c:/Users/bearf/OneDrive/ドキュメント/newpj/assets/sprites/enemies/\"*.import)",
+      "Bash(claude auth *)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

@@ -17,18 +17,19 @@ extends RefCounted
 const FLOOR_CONFIGS: Array = [
 	# ── デバッグ用：全フロア 100% 出現 ──────────────────────
 	{
-		"floor_min":   1,
-		"floor_max":  30,
-		"shop_chance": 1.0,   # デバッグ用 100%（通常は 0.25）
+		"floor_min":            1,
+		"floor_max":           30,
+		"shop_chance":          1.0,   # デバッグ用 100%（通常は 0.25）
+		"monster_house_chance": 1.0,   # デバッグ用 100%（通常は 0.30）
 	},
 
 	# ── 将来の設定例（コメントアウト中） ───────────────────
-	# 序盤（1〜10F）：25%
-	# { "floor_min":  1, "floor_max": 10, "shop_chance": 0.25 },
-	# 中盤（11〜20F）：30%
-	# { "floor_min": 11, "floor_max": 20, "shop_chance": 0.30 },
-	# 終盤（21〜30F）：20%
-	# { "floor_min": 21, "floor_max": 30, "shop_chance": 0.20 },
+	# 序盤（1〜10F）
+	# { "floor_min":  1, "floor_max": 10, "shop_chance": 0.25, "monster_house_chance": 0.10 },
+	# 中盤（11〜20F）
+	# { "floor_min": 11, "floor_max": 20, "shop_chance": 0.30, "monster_house_chance": 0.20 },
+	# 終盤（21〜30F）
+	# { "floor_min": 21, "floor_max": 30, "shop_chance": 0.20, "monster_house_chance": 0.30 },
 ]
 
 # ─── フロア設定取得 ───────────────────────────────────────
@@ -43,3 +44,6 @@ static func get_floor_config(floor_num: int) -> Dictionary:
 # ─── 個別アクセサ ─────────────────────────────────────────
 static func shop_chance(floor_num: int) -> float:
 	return float(get_floor_config(floor_num).get("shop_chance", 0.25))
+
+static func monster_house_chance(floor_num: int) -> float:
+	return float(get_floor_config(floor_num).get("monster_house_chance", 0.30))

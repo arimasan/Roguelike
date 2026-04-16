@@ -6,6 +6,8 @@ const TILE_SIZE     := 32
 const MAX_FLOOR     := 30
 const MAX_INVENTORY := 20
 const FOV_RADIUS    := 7
+const FOV_MODE_CLASSIC := 0   # ①通路=周囲1マス、部屋=全体照明
+const FOV_MODE_SCREEN  := 1   # ②画面内全タイル表示
 const HUNGER_RATE   := 15   # 何ターンごとに満腹度-1か
 
 # ─── ゲーム状態 ───────────────────────────────────────────
@@ -17,6 +19,7 @@ var turn_count:    int = 0
 var generator:     DungeonGenerator = null
 var explored:    Dictionary = {}   # Vector2i → true
 var fov_visible: Dictionary = {}   # Vector2i → true  ※CanvasItem.visible と衝突を避けるため改名
+var fov_mode:    int        = FOV_MODE_CLASSIC   # 現在のFOVモード
 
 # ─── プレイヤーステータス ─────────────────────────────────
 var p_hp:       int = 30
@@ -33,8 +36,15 @@ var p_shield:   Dictionary = {}
 var p_ring:     Dictionary = {}
 var p_inventory: Array = []
 var p_gold:      int   = 0
-var p_blind_turns: int  = 0    # 盲目ターン残数（0=通常視界）
-var _regen_accum: float = 0.0  # 自然回復の積み立て（整数になった分だけ回復）
+var p_blind_turns:     int  = 0     # 盲目ターン残数（視野半径1）
+var p_poisoned_turns:  int  = 0     # 毒ターン残数（毎ターン1ダメージ）
+var p_sleep_turns:     int  = 0     # 睡眠ターン残数（行動不能）
+var p_slow_turns:      int  = 0     # 鈍足ターン残数（2ターンに1回行動）
+var p_confused_turns:  int  = 0     # 混乱ターン残数（移動方向ランダム）
+var p_paralyzed_turns: int  = 0     # 麻痺ターン残数（完全行動不能）
+var _p_slow_skip:      bool = false # 鈍足：次の行動をスキップするか
+var _regen_accum:   float = 0.0     # 自然回復の積み立て
+var _hunger_accum:  float = 0.0     # 空腹ダメージの積み立て
 
 # ─── エンティティ ─────────────────────────────────────────
 # enemies: Array of { "data": dict, "hp": int, "grid_pos": V2i,
@@ -72,7 +82,14 @@ var _shopkeeper:      Dictionary = {}   # { "grid_pos": V2i, "node": Node2D }
 var shop_cursor:      int        = 0
 var shop_mode:        String     = "buy"   # "buy" or "sell"
 var shop_sell_cursor: int        = 0
-var _shop_entered:    bool       = false   # 入店メッセージ表示済みフラグ
+var _in_shop_area:    bool       = false   # 現在店内にいるか（BGM・メッセージ切り替え用）
+var _shop_traded:     bool       = false   # この滞在中に売買したか（退店メッセージ用）
+var _shop_entered:    bool       = false   # 入店メッセージ表示済みフラグ（旧・使用継続）
+
+# ─── モンスターハウス ──────────────────────────────────────
+# traps: Array of { "type": String, "grid_pos": V2i, "node": Node2D, "triggered": bool }
+var traps:                   Array = []
+var _monster_house_triggered: bool = false
 
 # ─── セーブ ───────────────────────────────────────────────
 const SAVE_PATH := "user://save.json"
@@ -88,15 +105,19 @@ var _player_node   = null   # tile_node.gd スクリプト付き Node2D
 var _camera:       Camera2D = null
 var _hud           = null   # hud.gd スクリプト付き Control
 var _bgm_player:   AudioStreamPlayer = null
-var _options_layer: CanvasLayer = null
-var _lbl_master_pct: Label = null
-var _lbl_bgm_pct:    Label = null
-var _lbl_se_pct:     Label = null
+var _options_layer:  CanvasLayer = null
+var _confirm_layer:  CanvasLayer = null   # 諦め確認ダイアログ
+var _lbl_master_pct:    Label   = null
+var _lbl_bgm_pct:       Label   = null
+var _lbl_se_pct:        Label   = null
+var _slider_master:     HSlider = null
+var _slider_bgm:        HSlider = null
+var _slider_se:         HSlider = null
 
 # ─── 音量設定 ────────────────────────────────────────────
-var vol_master: float = 0.0   # デバッグ用 0%
-var vol_bgm:    float = 0.0   # デバッグ用 0%
-var vol_se:     float = 0.0   # デバッグ用 0%
+var vol_master: float = 1.0
+var vol_bgm:    float = 1.0
+var vol_se:     float = 1.0
 
 # ─── キーコンフィグ ──────────────────────────────────────
 const KEY_ACTIONS: Dictionary = {
@@ -118,20 +139,29 @@ var _rebind_button:    Button     = null
 # ─── BGM パス定義 ────────────────────────────────────────
 ## 楽曲を差し替える際はここのパスを変更する（素材：MusMus https://musmus.work）
 const BGM := {
-	"explore":  "res://assets/bgm/explore.mp3",
-	# "boss":   "res://assets/bgm/boss.mp3",
-	# "gameover":"res://assets/bgm/gameover.mp3",
-	# "victory": "res://assets/bgm/victory.mp3",
+	"explore":       "res://assets/bgm/explore.mp3",
+	"shop":          "res://assets/bgm/shop.mp3",
+	"monster_house": "res://assets/bgm/monster_house.mp3",
+	# "boss":        "res://assets/bgm/boss.mp3",
+	# "gameover":    "res://assets/bgm/gameover.mp3",
+	# "victory":     "res://assets/bgm/victory.mp3",
 }
 
 # ─── SE パス定義 ─────────────────────────────────────────
 ## 効果音を差し替える際はここのパスを変更する（素材：効果音ラボ https://soundeffect-lab.info）
 const SE := {
-	"attack": "res://assets/se/attack.mp3",
-	"hit":    "res://assets/se/hit.mp3",
-	"stairs": "res://assets/se/stairs.mp3",
-	"coin":   "res://assets/se/coin.mp3",
-	"pickup": "res://assets/se/pickup.mp3",
+	"attack":       "res://assets/se/attack.mp3",
+	"hit":          "res://assets/se/hit.mp3",
+	"stairs":       "res://assets/se/stairs.mp3",
+	"coin":         "res://assets/se/coin.mp3",
+	"pickup":       "res://assets/se/pickup.mp3",
+	"trap":         "res://assets/se/trap.mp3",
+	# ─── アイテム・スキル用 ───────────────────────────────
+	"general_item": "res://assets/se/general_item.mp3",
+	"fire":         "res://assets/se/fire.mp3",
+	"ice":          "res://assets/se/ice.mp3",
+	"lightning":    "res://assets/se/lightning.mp3",
+	"curse":        "res://assets/se/curse.mp3",
 }
 
 # ─── 初期化 ───────────────────────────────────────────────
@@ -199,6 +229,10 @@ func _start_new_floor() -> void:
 	shop_items.clear()
 	_shopkeeper    = {}
 	_shop_entered  = false
+	_in_shop_area  = false
+	_shop_traded   = false
+	traps.clear()
+	_monster_house_triggered = false
 	explored.clear()
 	fov_visible.clear()
 
@@ -217,12 +251,15 @@ func _start_new_floor() -> void:
 	_player_node.call("set_grid", p_grid.x, p_grid.y)
 	_player_node.call("set_sprite", Assets.PLAYER)
 
-	# 敵・アイテム・お金配置
+	# 敵・アイテム・お金・ワナ配置
 	_spawn_enemies()
+	_spawn_traps()
 	_spawn_items()
 	_spawn_gold()
 	if generator.has_shop:
 		_setup_shop()
+	if generator.has_monster_house:
+		_setup_monster_house()
 
 	# FOV更新・カメラ・HUD
 	_update_fov()
@@ -249,12 +286,19 @@ func _spawn_enemies() -> void:
 		node.call("set_grid", spawn_pos.x, spawn_pos.y)
 		node.call("set_sprite", Assets.enemy_sprite(data.get("id", "")))
 		enemies.append({
-			"data":     data,
-			"hp":       data["hp"],
-			"grid_pos": spawn_pos,
-			"node":     node,
-			"asleep":   false,
-			"alerted":  false,
+			"data":         data,
+			"hp":           data["hp"],
+			"grid_pos":     spawn_pos,
+			"node":            node,
+			"asleep":          false,
+			"alerted":         false,
+			"asleep_turns":    0,
+			"poisoned":        0,
+			"sealed":          false,
+			"slow_turns":      0,
+			"slow_skip":       false,
+			"confused_turns":  0,
+			"paralyzed_turns": 0,
 		})
 		occupied.append(spawn_pos)
 
@@ -276,6 +320,10 @@ func _spawn_gold() -> void:
 		occupied.append(enemy["grid_pos"])
 	for fi in floor_items:
 		occupied.append(fi["grid_pos"])
+	for si in shop_items:
+		occupied.append(si["grid_pos"])
+	for trap in traps:
+		occupied.append(trap["grid_pos"])
 	var count: int = randi_range(2, 4)
 	for _i in count:
 		var pos: Vector2i = generator.random_floor_pos()
@@ -316,6 +364,220 @@ func _setup_shop() -> void:
 		node.call("set_sprite", Assets.item_type_sprite(item.get("type", 0)))
 		shop_items.append({"item": item, "price": price, "grid_pos": pos, "node": node})
 
+func _setup_monster_house() -> void:
+	var pool: Array = EnemyData.for_floor(current_floor)
+	if pool.is_empty():
+		return
+	var occupied: Array = [p_grid]
+	# 敵を全員 asleep=true で配置
+	for spawn_pos: Vector2i in generator.monster_house_enemy_spawns:
+		if spawn_pos in occupied:
+			continue
+		var data: Dictionary = pool[randi() % pool.size()].duplicate(true)
+		var node := _make_tile_node(data["symbol"], data["color"])
+		node.z_index = 1
+		_entity_layer.add_child(node)
+		node.call("set_grid", spawn_pos.x, spawn_pos.y)
+		node.call("set_sprite", Assets.enemy_sprite(data.get("id", "")))
+		enemies.append({
+			"data":            data,
+			"hp":              data["hp"],
+			"grid_pos":        spawn_pos,
+			"node":            node,
+			"asleep":          true,   # 入室まで行動しない
+			"alerted":         false,
+			"asleep_turns":    0,
+			"poisoned":        0,
+			"sealed":          false,
+			"slow_turns":      0,
+			"slow_skip":       false,
+			"confused_turns":  0,
+			"paralyzed_turns": 0,
+		})
+		node.call("set_status", "眠", Color(0.3, 0.8, 1.0))
+		occupied.append(spawn_pos)
+	# アイテム
+	for item_pos: Vector2i in generator.monster_house_item_spawns:
+		if item_pos in occupied:
+			continue
+		var item: Dictionary = ItemData.random_item(current_floor)
+		_place_floor_item(item, item_pos)
+		occupied.append(item_pos)
+	# ワナ（不可視ノードとして配置）
+	for trap_pos: Vector2i in generator.monster_house_trap_pos:
+		if trap_pos in occupied:
+			continue
+		var td: Dictionary = TrapData.random_trap()
+		_place_trap(td["id"], trap_pos)
+		occupied.append(trap_pos)
+
+## モンスターハウス発動：全員覚醒（BGMは呼び出し元の _update_area_bgm が切り替える）
+func _trigger_monster_house() -> void:
+	_monster_house_triggered = true
+	add_message("モンスターハウスだ！！")
+	for enemy: Dictionary in enemies:
+		if generator.monster_house_room.has_point(enemy["grid_pos"] as Vector2i):
+			enemy["asleep"]  = false
+			enemy["alerted"] = true
+			_refresh_enemy_status_visual(enemy)
+
+## 踏んだワナを発動
+func _check_trap(pos: Vector2i) -> void:
+	for i in traps.size():
+		if traps[i]["grid_pos"] != pos:
+			continue
+		var trap: Dictionary = traps[i]
+		# スプライトを表示してフラッシュ
+		trap["triggered"] = true
+		trap["node"].visible = true
+		trap["node"].call("flash", Color(1.0, 0.5, 0.0))
+		_play_se(TrapData.trap_se(trap["type"]))
+		add_message("%s にはまった！" % TrapData.trap_name(trap["type"]))
+		# 効果適用
+		match trap["type"]:
+			"damage":
+				var dmg: int = max(1, p_hp_max / 10 + current_floor)
+				p_hp = max(0, p_hp - dmg)
+				add_message("%d ダメージを受けた！" % dmg)
+				if p_hp <= 0:
+					_trigger_game_over("ダメージのワナで力尽きた")
+					return
+			"warp":
+				p_grid = generator.random_floor_pos()
+				_player_node.call("set_grid", p_grid.x, p_grid.y)
+				_update_fov()
+				_update_camera()
+				add_message("見知らぬ場所に飛ばされた！")
+			"hunger":
+				p_fullness = max(0, p_fullness - 30)
+				add_message("急にお腹が空いてきた…")
+			"blind":
+				p_blind_turns += 10
+				add_message("目の前が真っ暗になった！")
+			"poison":
+				p_poisoned_turns += 10
+				add_message("毒にやられた！")
+			"sleep":
+				p_sleep_turns += 5
+				add_message("眠気に襲われた…")
+			"drop_item":
+				if not p_inventory.is_empty():
+					var drop_idx: int = randi() % p_inventory.size()
+					var dropped: Dictionary = p_inventory[drop_idx]
+					p_inventory.remove_at(drop_idx)
+					var drop_pos: Vector2i = _find_free_drop_pos(p_grid)
+					if drop_pos != Vector2i(-1, -1):
+						_place_floor_item(dropped, drop_pos)
+					add_message("転んで %s を落とした！" % dropped.get("name", "?"))
+				else:
+					add_message("転んだが、荷物はなかった。")
+			"alarm":
+				add_message("けたたましい警報が鳴り響いた！")
+				for enemy: Dictionary in enemies:
+					enemy["asleep"]  = false
+					enemy["alerted"] = true
+					_refresh_enemy_status_visual(enemy)
+			"slow":
+				apply_status_to_player("slow", 8)
+			"confuse":
+				apply_status_to_player("confuse", 5)
+		# 壊れ判定
+		if randf() < TrapData.break_chance(trap["type"]):
+			add_message("%s は壊れた。" % TrapData.trap_name(trap["type"]))
+			trap["node"].queue_free()
+			traps.remove_at(i)
+		_refresh_hud()
+		return
+
+# ─── 状態異常管理 ─────────────────────────────────────────
+
+## プレイヤーに状態異常を付与し、ビジュアルを更新する
+func apply_status_to_player(status: String, turns: int) -> void:
+	match status:
+		"poison":
+			p_poisoned_turns = max(p_poisoned_turns, turns)
+			add_message("毒にやられた！")
+		"sleep":
+			p_sleep_turns = max(p_sleep_turns, turns)
+			add_message("眠気に襲われた…")
+		"blind":
+			p_blind_turns = max(p_blind_turns, turns)
+			add_message("目の前が真っ暗になった！")
+		"slow":
+			p_slow_turns = max(p_slow_turns, turns)
+			add_message("動きが鈍くなった！")
+		"confuse":
+			p_confused_turns = max(p_confused_turns, turns)
+			add_message("頭がぐるぐるする！")
+		"paralyze":
+			p_paralyzed_turns = max(p_paralyzed_turns, turns)
+			add_message("体が動かない！")
+	_refresh_player_status_visual()
+
+## プレイヤーノードの状態異常ビジュアルを現在の状態に合わせて更新
+func _refresh_player_status_visual() -> void:
+	if not is_instance_valid(_player_node):
+		return
+	if p_paralyzed_turns > 0:
+		_player_node.call("set_status", "麻", Color(1.0, 1.0, 0.2))
+	elif p_sleep_turns > 0:
+		_player_node.call("set_status", "眠", Color(0.3, 0.8, 1.0))
+	elif p_confused_turns > 0:
+		_player_node.call("set_status", "混", Color(0.8, 0.3, 1.0))
+	elif p_slow_turns > 0:
+		_player_node.call("set_status", "鈍", Color(0.6, 0.6, 0.6))
+	elif p_poisoned_turns > 0:
+		_player_node.call("set_status", "毒", Color(0.3, 1.0, 0.3))
+	elif p_blind_turns > 0:
+		_player_node.call("set_status", "盲", Color(0.5, 0.5, 0.5))
+	else:
+		_player_node.call("clear_status")
+
+## 敵に状態異常を付与し、ビジュアルを更新する
+func apply_status_to_enemy(enemy: Dictionary, status: String, turns: int) -> void:
+	var name: String = enemy["data"].get("name", "敵")
+	match status:
+		"poison":
+			enemy["poisoned"] = max(int(enemy.get("poisoned", 0)), turns)
+			add_message("%s は毒にかかった！" % name)
+		"sleep":
+			enemy["asleep"]       = true
+			enemy["asleep_turns"] = max(int(enemy.get("asleep_turns", 0)), turns)
+			add_message("%s は眠り込んだ！" % name)
+		"slow":
+			enemy["slow_turns"] = max(int(enemy.get("slow_turns", 0)), turns)
+			add_message("%s の動きが鈍くなった！" % name)
+		"confuse":
+			enemy["confused_turns"] = max(int(enemy.get("confused_turns", 0)), turns)
+			add_message("%s は混乱した！" % name)
+		"paralyze":
+			enemy["paralyzed_turns"] = max(int(enemy.get("paralyzed_turns", 0)), turns)
+			add_message("%s は麻痺した！" % name)
+		"seal":
+			enemy["sealed"] = true
+			add_message("%s は封印された！" % name)
+	_refresh_enemy_status_visual(enemy)
+
+## 敵ノードの状態異常ビジュアルを現在の状態に合わせて更新
+func _refresh_enemy_status_visual(enemy: Dictionary) -> void:
+	var node = enemy.get("node")
+	if not is_instance_valid(node):
+		return
+	if enemy.get("paralyzed_turns", 0) > 0:
+		node.call("set_status", "麻", Color(1.0, 1.0, 0.2))
+	elif enemy.get("asleep", false):
+		node.call("set_status", "眠", Color(0.3, 0.8, 1.0))
+	elif enemy.get("confused_turns", 0) > 0:
+		node.call("set_status", "混", Color(0.8, 0.3, 1.0))
+	elif enemy.get("slow_turns", 0) > 0:
+		node.call("set_status", "鈍", Color(0.6, 0.6, 0.6))
+	elif enemy.get("poisoned", 0) > 0:
+		node.call("set_status", "毒", Color(0.3, 1.0, 0.3))
+	elif enemy.get("sealed", false):
+		node.call("set_status", "封", Color(0.9, 0.5, 0.1))
+	else:
+		node.call("clear_status")
+
 func _open_shop() -> void:
 	shop_cursor      = 0
 	shop_mode        = "buy"
@@ -342,6 +604,37 @@ func _convert_carpet_drops_to_shop_items() -> void:
 			"node":     fi["node"],
 		})
 		add_message("%s を引き取った。（買取 %dG）" % [fi["item"].get("name", "?"), price])
+
+## エリア（探索/店/MH）に応じてBGM切り替え・入退場メッセージを管理する
+func _update_area_bgm() -> void:
+	# ─ BGM ターゲットを決定 ────────────────────────────────
+	var in_mh:   bool = generator.has_monster_house and generator.monster_house_room.has_point(p_grid)
+	var in_shop: bool = generator.has_shop and generator.shop_room.has_point(p_grid)
+
+	var target_bgm: String = "explore"
+	if _monster_house_triggered:
+		target_bgm = "monster_house"   # 発動後はフロア全体でMH BGM
+	if in_shop:
+		target_bgm = "shop"   # 店内は常にショップBGM（MHより優先）
+
+	# ─ 店の入退場メッセージ ────────────────────────────────
+	if in_shop != _in_shop_area:
+		_in_shop_area = in_shop
+		if in_shop:
+			add_message("いらっしゃいませ！何かお探しですか？")
+			_shop_traded = false
+		else:
+			if _shop_traded:
+				add_message("ありがとうございました。またのお越しをお待ちしております！")
+			else:
+				add_message("冷やかしか？…またいつでも来い。")
+
+	# ─ MH 発動チェック（発動後は target_bgm を上書き）─────
+	if in_mh and not _monster_house_triggered:
+		_trigger_monster_house()   # 内部で _monster_house_triggered = true にする
+		target_bgm = "monster_house"
+
+	_play_bgm(target_bgm)
 
 ## 空いているカーペットタイルを返す。なければ Vector2i(-1,-1)
 func _find_free_carpet_tile() -> Vector2i:
@@ -389,6 +682,7 @@ func _try_sell(index: int) -> void:
 	shop_items.append({"item": item, "price": price, "grid_pos": carpet, "node": node})
 	p_inventory.remove_at(index)
 	shop_sell_cursor = min(shop_sell_cursor, max(0, p_inventory.size() - 1))
+	_shop_traded = true
 	add_message("%s を %dG で売りに出した。" % [item.get("name", "?"), price])
 	_play_se("coin")
 	_refresh_hud()
@@ -446,6 +740,7 @@ func _try_buy(index: int) -> void:
 	si["node"].queue_free()
 	shop_items.remove_at(index)
 	shop_cursor = min(shop_cursor, max(0, shop_items.size() - 1))
+	_shop_traded = true
 	add_message("%s を %dG で購入した。（残金: %dG）" % [item.get("name", "?"), price, p_gold])
 	_play_se("coin")
 	if game_state == "shop":
@@ -461,6 +756,22 @@ func _place_floor_item(item: Dictionary, pos: Vector2i) -> void:
 	node.call("set_grid", pos.x, pos.y)
 	node.call("set_sprite", Assets.item_type_sprite(item.get("type", 0)))
 	floor_items.append({"item": item, "grid_pos": pos, "node": node})
+
+## ワナを1つ配置する（発動まで非表示）
+func _place_trap(trap_type: String, pos: Vector2i) -> void:
+	var node := _make_tile_node("", Color(0.15, 0.08, 0.08), Color.WHITE, 0)
+	node.z_index = 0
+	node.visible = false   # 未発動は非表示
+	_entity_layer.add_child(node)
+	node.call("set_grid", pos.x, pos.y)
+	node.call("set_sprite", Assets.TRAP)
+	traps.append({"type": trap_type, "grid_pos": pos, "node": node, "triggered": false})
+
+## 通常フロアのワナをスポーンする（generator.trap_spawns を使用）
+func _spawn_traps() -> void:
+	for pos: Vector2i in generator.trap_spawns:
+		var td: Dictionary = TrapData.random_trap()
+		_place_trap(td["id"], pos)
 
 # ─── 入力処理 ─────────────────────────────────────────────
 func _unhandled_input(event: InputEvent) -> void:
@@ -517,7 +828,41 @@ func _apply_zoom() -> void:
 	_camera.zoom = Vector2(z, z)
 
 func _handle_play_input(kc: int) -> void:
+	# 麻痺：完全行動不能
+	if p_paralyzed_turns > 0:
+		add_message("体が痺れて動けない！")
+		_player_node.call("flash", Color(1.0, 1.0, 0.2))
+		_end_player_turn()
+		return
+	# 睡眠：行動不能
+	if p_sleep_turns > 0:
+		add_message("眠っている…")
+		_end_player_turn()
+		return
+	# 鈍足：2ターンに1回スキップ
+	if p_slow_turns > 0 and _p_slow_skip:
+		_p_slow_skip = false
+		add_message("体が重くて動けない…")
+		_player_node.call("flash", Color(0.6, 0.6, 0.6))
+		_end_player_turn()
+		return
+	if p_slow_turns > 0:
+		_p_slow_skip = true
 	var mod: int = key_bindings.get("diag_mod", KEY_SHIFT)
+
+	# 混乱：移動キーを押したとき方向をランダム化
+	if p_confused_turns > 0:
+		var is_move_key := kc in [
+			key_bindings.get("move_up", KEY_UP), key_bindings.get("move_down", KEY_DOWN),
+			key_bindings.get("move_left", KEY_LEFT), key_bindings.get("move_right", KEY_RIGHT),
+		]
+		if is_move_key or Input.is_key_pressed(mod):
+			var dirs := [Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1),
+						 Vector2i(1,1), Vector2i(1,-1), Vector2i(-1,1), Vector2i(-1,-1)]
+			add_message("混乱して変な方向に動いた！")
+			_player_node.call("flash", Color(0.8, 0.3, 1.0))
+			_try_player_move(dirs[randi() % dirs.size()])
+			return
 
 	# 斜め移動：モディファイア + 2方向キー同時押し
 	# モディファイア押下中は通常移動を一切発火させない（桂馬移動防止）
@@ -576,10 +921,10 @@ func _try_player_move(dir: Vector2i) -> void:
 	# 移動
 	p_grid = new_pos
 	_player_node.call("set_grid", p_grid.x, p_grid.y)
-	# 入店チェック（初回のみメッセージ）
-	if generator.has_shop and not _shop_entered and generator.shop_room.has_point(p_grid):
-		_shop_entered = true
-		add_message("いらっしゃいませ！店員に話しかけると購入・売却ができます。カーペットに置いてから話しかけても売れます。")
+	# BGM切り替え・入退場メッセージ・MH発動
+	_update_area_bgm()
+	# ワナチェック
+	_check_trap(p_grid)
 	# 店アイテム踏んだ時：名前と価格を表示
 	for si in shop_items:
 		if si["grid_pos"] == p_grid:
@@ -644,6 +989,7 @@ func _collect_gold(pos: Vector2i) -> void:
 
 func _pickup_item(fi: Dictionary) -> void:
 	if p_inventory.size() >= MAX_INVENTORY:
+		add_message("%s の上に乗った。" % fi["item"].get("name", "?"))
 		add_message("荷物がいっぱいで拾えない！")
 		return
 	var item: Dictionary = fi["item"]
@@ -662,10 +1008,14 @@ func _end_player_turn() -> void:
 	turn_count += 1
 	if turn_count % HUNGER_RATE == 0:
 		p_fullness = max(0, p_fullness - 1)
-		if p_fullness == 0:
-			_apply_damage_to_player(3, "空腹")
-		elif p_fullness <= 10:
+		if p_fullness <= 10 and p_fullness > 0:
 			add_message("お腹が減って苦しい…")
+	if p_fullness == 0:
+		_hunger_accum += float(p_hp_max) / 100.0
+		var hunger_dmg := int(_hunger_accum)
+		if hunger_dmg >= 1:
+			_hunger_accum -= float(hunger_dmg)
+			_apply_damage_to_player(hunger_dmg, "空腹")
 	# 自然回復（200ターンで最大HP分を回復。小数積み立て）
 	if p_hp > 0 and p_hp < p_hp_max:
 		_regen_accum += float(p_hp_max) / 200.0
@@ -681,6 +1031,39 @@ func _end_player_turn() -> void:
 		p_blind_turns -= 1
 		if p_blind_turns == 0:
 			add_message("目が見えるようになった。")
+	# 毒ダメージ
+	if p_poisoned_turns > 0:
+		_player_node.call("flash", Color(0.3, 1.0, 0.3))
+		_apply_damage_to_player(1, "毒")
+		p_poisoned_turns -= 1
+		if p_poisoned_turns == 0:
+			add_message("毒が抜けた。")
+			_refresh_player_status_visual()
+	# 睡眠カウントダウン
+	if p_sleep_turns > 0:
+		p_sleep_turns -= 1
+		if p_sleep_turns == 0:
+			add_message("目が覚めた。")
+			_refresh_player_status_visual()
+	# 鈍足カウントダウン
+	if p_slow_turns > 0:
+		p_slow_turns -= 1
+		if p_slow_turns == 0:
+			_p_slow_skip = false
+			add_message("動きが戻った。")
+			_refresh_player_status_visual()
+	# 混乱カウントダウン
+	if p_confused_turns > 0:
+		p_confused_turns -= 1
+		if p_confused_turns == 0:
+			add_message("混乱が収まった。")
+			_refresh_player_status_visual()
+	# 麻痺カウントダウン
+	if p_paralyzed_turns > 0:
+		p_paralyzed_turns -= 1
+		if p_paralyzed_turns == 0:
+			add_message("麻痺が解けた。")
+			_refresh_player_status_visual()
 	# 敵の追加スポーン（50ターンに1体、視界外）
 	if turn_count % 50 == 0:
 		_spawn_wandering_enemy()
@@ -757,11 +1140,20 @@ func _enemy_turns() -> void:
 		_single_enemy_turn(enemy)
 
 func _single_enemy_turn(enemy: Dictionary) -> void:
-	# 一時的な睡眠・封印のカウントダウン
+	# 麻痺カウントダウン（完全行動不能）
+	if enemy.get("paralyzed_turns", 0) > 0:
+		enemy["paralyzed_turns"] -= 1
+		enemy["node"].call("flash", Color(1.0, 1.0, 0.2))
+		if enemy["paralyzed_turns"] == 0:
+			_refresh_enemy_status_visual(enemy)
+		return
+
+	# 睡眠カウントダウン
 	if enemy.get("asleep_turns", 0) > 0:
 		enemy["asleep_turns"] -= 1
 		if enemy["asleep_turns"] <= 0:
 			enemy["asleep"] = false
+			_refresh_enemy_status_visual(enemy)
 	if enemy.get("asleep", false):
 		return
 
@@ -769,15 +1161,41 @@ func _single_enemy_turn(enemy: Dictionary) -> void:
 	if enemy.get("poisoned", 0) > 0:
 		enemy["poisoned"] -= 1
 		enemy["hp"] -= 2
-		enemy["node"].call("flash", Color(0.5, 1.0, 0.2))
+		enemy["node"].call("flash", Color(0.3, 1.0, 0.2))
 		add_message("%s は毒で 2 ダメージ！" % enemy["data"]["name"])
 		if enemy["hp"] <= 0:
 			_kill_enemy(enemy)
 			return
+		if enemy["poisoned"] == 0:
+			_refresh_enemy_status_visual(enemy)
+
+	# 鈍足：2ターンに1回スキップ
+	if enemy.get("slow_turns", 0) > 0:
+		enemy["slow_turns"] -= 1
+		var skip: bool = enemy.get("slow_skip", false)
+		enemy["slow_skip"] = not skip
+		if enemy["slow_turns"] == 0:
+			enemy["slow_skip"] = false
+			_refresh_enemy_status_visual(enemy)
+		if skip:
+			enemy["node"].call("flash", Color(0.6, 0.6, 0.6))
+			return
+
+	# 混乱カウントダウン（移動はランダム化、後続で判定）
+	if enemy.get("confused_turns", 0) > 0:
+		enemy["confused_turns"] -= 1
+		if enemy["confused_turns"] == 0:
+			_refresh_enemy_status_visual(enemy)
 
 	# regen: HPを1回復
 	if enemy["data"].get("behavior", "") == "regen":
 		enemy["hp"] = min(enemy["hp"] + 1, enemy["data"]["hp"])
+
+	# 混乱中はランダム行動のみ
+	if enemy.get("confused_turns", 0) > 0:
+		enemy["node"].call("flash", Color(0.8, 0.3, 1.0))
+		_enemy_random_walk(enemy)
+		return
 
 	var ep: Vector2i = enemy["grid_pos"] as Vector2i
 	var in_sight: bool = fov_visible.has(ep)
@@ -790,8 +1208,8 @@ func _single_enemy_turn(enemy: Dictionary) -> void:
 		else:
 			# 追いかけ移動
 			_enemy_chase(enemy)
-			# fast行動：もう1回
-			if enemy["data"].get("behavior", "") == "fast":
+			# fast行動：もう1回（鈍足中は無効）
+			if enemy["data"].get("behavior", "") == "fast" and enemy.get("slow_turns", 0) == 0:
 				if ep.distance_squared_to(p_grid) <= 2:
 					_enemy_attack(enemy)
 				else:
@@ -880,6 +1298,7 @@ func _apply_item(item: Dictionary) -> bool:
 	var t: int = item.get("type", -1)
 	match t:
 		ItemData.TYPE_WEAPON:
+			_play_item_se(item)
 			if p_weapon.get("_iid", -1) == item.get("_iid", -2):
 				p_weapon = {}
 				add_message("%s を外した。" % item.get("name","?"))
@@ -891,6 +1310,7 @@ func _apply_item(item: Dictionary) -> bool:
 			return false   # インベントリに残す
 
 		ItemData.TYPE_SHIELD:
+			_play_item_se(item)
 			if p_shield.get("_iid", -1) == item.get("_iid", -2):
 				p_shield = {}
 				add_message("%s を外した。" % item.get("name","?"))
@@ -900,6 +1320,7 @@ func _apply_item(item: Dictionary) -> bool:
 			return false
 
 		ItemData.TYPE_RING:
+			_play_item_se(item)
 			if p_ring.get("_iid", -1) == item.get("_iid", -2):
 				p_ring = {}
 				add_message("%s を外した。" % item.get("name","?"))
@@ -909,14 +1330,21 @@ func _apply_item(item: Dictionary) -> bool:
 			return false
 
 		ItemData.TYPE_FOOD:
+			_play_item_se(item)
 			var fullness_gain: int = item.get("fullness", 0)
-			var heal: int          = item.get("heal", 0)
 			if fullness_gain > 0:
 				p_fullness = min(100, p_fullness + fullness_gain)
+				_hunger_accum = 0.0   # 空腹ダメージ積み立てリセット
 				add_message("%s を食べた。満腹度が回復した。" % item.get("name","?"))
 			elif fullness_gain < 0:
 				p_fullness = max(0, p_fullness + fullness_gain)
 				add_message("腐った食料を食べてしまった！")
+			return true
+
+		ItemData.TYPE_POTION:
+			_play_item_se(item)
+			add_message("%s を飲んだ。" % item.get("name","?"))
+			var heal: int = item.get("heal", 0)
 			if heal > 0:
 				p_hp = min(p_hp_max, p_hp + heal)
 				add_message("HP が %d 回復した。" % heal)
@@ -924,6 +1352,31 @@ func _apply_item(item: Dictionary) -> bool:
 			if atk_up > 0:
 				p_atk_base += atk_up
 				add_message("力が %d 上がった！" % atk_up)
+			match item.get("effect", ""):
+				"antidote":
+					var cured := false
+					if p_poisoned_turns > 0:
+						p_poisoned_turns = 0
+						cured = true
+					if p_blind_turns > 0:
+						p_blind_turns = 0
+						cured = true
+					if p_sleep_turns > 0:
+						p_sleep_turns = 0
+						cured = true
+					add_message("すべての状態異常が治った！" if cured else "特に変化はなかった。")
+				"detox":
+					if p_poisoned_turns > 0:
+						p_poisoned_turns = 0
+						add_message("毒が治った！")
+					else:
+						add_message("毒にはかかっていなかった。")
+				"awaken":
+					if p_sleep_turns > 0:
+						p_sleep_turns = 0
+						add_message("眠気が吹き飛んだ！")
+					else:
+						add_message("眠くはなかった。")
 			return true
 
 		ItemData.TYPE_SCROLL:
@@ -952,6 +1405,7 @@ func _apply_item(item: Dictionary) -> bool:
 	return true
 
 func _apply_scroll(item: Dictionary) -> void:
+	_play_item_se(item)
 	var effect: String = item.get("effect", "")
 	add_message("本を読んだ！（%s）" % item.get("name","?"))
 	match effect:
@@ -993,6 +1447,22 @@ func _apply_scroll(item: Dictionary) -> void:
 		"monster":
 			_spawn_one_enemy_near_player()
 			add_message("モンスターが現れた！")
+		"slow":
+			# 視野内の全敵に鈍足を付与
+			var affected := 0
+			for enemy in enemies:
+				if fov_visible.has(enemy["grid_pos"]):
+					apply_status_to_enemy(enemy, "slow", 6)
+					affected += 1
+			add_message("周囲の敵の動きが鈍くなった！" if affected > 0 else "効果はなかった。")
+		"confuse":
+			# 視野内の全敵に混乱を付与
+			var affected := 0
+			for enemy in enemies:
+				if fov_visible.has(enemy["grid_pos"]):
+					apply_status_to_enemy(enemy, "confuse", 5)
+					affected += 1
+			add_message("周囲の敵が混乱した！" if affected > 0 else "効果はなかった。")
 
 ## ターン経過による追加スポーン（視界外のランダム位置に1体）
 func _spawn_wandering_enemy() -> void:
@@ -1019,6 +1489,8 @@ func _spawn_wandering_enemy() -> void:
 			"data": data, "hp": data["hp"],
 			"grid_pos": pos, "node": node,
 			"asleep": false, "alerted": false,
+			"asleep_turns": 0, "poisoned": 0, "sealed": false,
+			"slow_turns": 0, "slow_skip": false, "confused_turns": 0, "paralyzed_turns": 0,
 		})
 		return   # 1体沸いたら終了
 
@@ -1036,9 +1508,11 @@ func _spawn_one_enemy_near_player() -> void:
 		"data": data, "hp": data["hp"],
 		"grid_pos": pos, "node": node,
 		"asleep": false, "alerted": true,
+		"asleep_turns": 0, "poisoned": 0, "sealed": false,
 	})
 
 func _apply_pot(item: Dictionary) -> void:
+	_play_item_se(item)
 	var effect: String = item.get("effect", "")
 	add_message("箱を使った！（%s）" % item.get("name","?"))
 	match effect:
@@ -1132,6 +1606,7 @@ func _handle_storage_input(kc: int) -> void:
 	_refresh_hud()
 
 func _apply_staff(item: Dictionary) -> void:
+	_play_item_se(item)
 	var effect: String = item.get("effect", "")
 	add_message("%s を振った！" % item.get("name","?"))
 	match effect:
@@ -1234,6 +1709,8 @@ func _find_free_drop_pos(origin: Vector2i) -> Vector2i:
 		occupied.append(fi["grid_pos"] as Vector2i)
 	for si in shop_items:
 		occupied.append(si["grid_pos"] as Vector2i)
+	for trap in traps:
+		occupied.append(trap["grid_pos"] as Vector2i)
 
 	# 足元 → 8近傍の順で探す
 	var candidates: Array = [origin]
@@ -1281,15 +1758,31 @@ func _drop_selected_item() -> void:
 # ─── FOV（視野計算）──────────────────────────────────────
 func _update_fov() -> void:
 	fov_visible.clear()
-	var radius := FOV_RADIUS
-	if p_blind_turns > 0:
-		radius = 1
+	if fov_mode == FOV_MODE_SCREEN:
+		_fov_fill_screen()
+	elif p_blind_turns > 0:
+		_fov_radius(1)   # 盲目: 周囲1マスのみ
 	elif p_ring.get("effect", "") == "detection":
-		radius = 15
-	for dy in range(-radius, radius + 1):
-		for dx in range(-radius, radius + 1):
-			if dx * dx + dy * dy > radius * radius:
-				continue
+		_fov_radius(15)
+	elif _is_in_room():
+		_fov_flood_room()   # 部屋内: 部屋全体を一括照明
+	else:
+		_fov_radius(1)   # 通路: 周囲1マスのみ
+	_map_drawer.call("queue_redraw")
+
+## プレイヤーがいずれかの部屋Rect内にいるか判定
+func _is_in_room() -> bool:
+	if generator == null:
+		return false
+	for room: Rect2i in generator.rooms:
+		if room.has_point(p_grid):
+			return true
+	return false
+
+## 半径 r の正方形（チェビシェフ距離）＋LOS で視野を計算（fov_visible/explored に書き込む）
+func _fov_radius(r: int) -> void:
+	for dy in range(-r, r + 1):
+		for dx in range(-r, r + 1):
 			var tx := p_grid.x + dx
 			var ty := p_grid.y + dy
 			if tx < 0 or tx >= DungeonGenerator.MAP_W \
@@ -1298,8 +1791,40 @@ func _update_fov() -> void:
 			if _has_los(p_grid.x, p_grid.y, tx, ty):
 				var vp := Vector2i(tx, ty)
 				fov_visible[vp] = true
-				explored[vp] = true
-	_map_drawer.call("queue_redraw")
+				explored[vp]    = true
+
+## 現在いる部屋全体（＋周囲1マスの壁）を照らす
+func _fov_flood_room() -> void:
+	for room: Rect2i in generator.rooms:
+		if not room.has_point(p_grid):
+			continue
+		# 部屋フロア＋外周1マス（壁を含む）
+		for y in range(room.position.y - 1, room.end.y + 1):
+			for x in range(room.position.x - 1, room.end.x + 1):
+				if x < 0 or x >= DungeonGenerator.MAP_W \
+						or y < 0 or y >= DungeonGenerator.MAP_H:
+					continue
+				var vp := Vector2i(x, y)
+				fov_visible[vp] = true
+				explored[vp]    = true
+		return   # 1部屋だけ処理
+
+## カメラズームに基づき画面内の全タイルを視野に入れる（②モード用）
+func _fov_fill_screen() -> void:
+	var vp_size: Vector2 = get_viewport().get_visible_rect().size
+	var zoom: float = _camera.zoom.x if is_instance_valid(_camera) else 1.0
+	var half_w: int = int(ceil(vp_size.x / (TILE_SIZE * zoom * 2.0))) + 1
+	var half_h: int = int(ceil(vp_size.y / (TILE_SIZE * zoom * 2.0))) + 1
+	for dy in range(-half_h, half_h + 1):
+		for dx in range(-half_w, half_w + 1):
+			var tx := p_grid.x + dx
+			var ty := p_grid.y + dy
+			if tx < 0 or tx >= DungeonGenerator.MAP_W \
+					or ty < 0 or ty >= DungeonGenerator.MAP_H:
+				continue
+			var vp := Vector2i(tx, ty)
+			fov_visible[vp] = true
+			explored[vp]    = true
 
 func _has_los(x0: int, y0: int, x1: int, y1: int) -> bool:
 	var dx: int = abs(x1 - x0)
@@ -1340,6 +1865,12 @@ func _sync_entity_visibility() -> void:
 		_shopkeeper["node"].visible = explored.has(_shopkeeper["grid_pos"] as Vector2i)
 	for si in shop_items:
 		si["node"].visible = explored.has(si["grid_pos"] as Vector2i)
+	# ワナ：発動済みかつ探索済みなら表示
+	for trap in traps:
+		if trap["triggered"]:
+			trap["node"].visible = explored.has(trap["grid_pos"] as Vector2i)
+		else:
+			trap["node"].visible = false
 
 # ─── カメラ更新 ───────────────────────────────────────────
 func _update_camera() -> void:
@@ -1401,6 +1932,10 @@ func save_game() -> void:
 			"asleep_turns": enemy.get("asleep_turns", 0),
 			"poisoned":     enemy.get("poisoned", 0),
 			"sealed":       enemy.get("sealed", false),
+			"slow_turns":      enemy.get("slow_turns", 0),
+			"slow_skip":       enemy.get("slow_skip", false),
+			"confused_turns":  enemy.get("confused_turns", 0),
+			"paralyzed_turns": enemy.get("paralyzed_turns", 0),
 		})
 
 	# フロアアイテム
@@ -1453,8 +1988,15 @@ func save_game() -> void:
 			"exp_next":    p_exp_next,
 			"fullness":    p_fullness,
 			"gold":        p_gold,
-			"blind_turns": p_blind_turns,
-			"regen_accum": _regen_accum,
+			"blind_turns":    p_blind_turns,
+			"poisoned_turns": p_poisoned_turns,
+			"sleep_turns":    p_sleep_turns,
+			"slow_turns":     p_slow_turns,
+			"confused_turns": p_confused_turns,
+			"paralyzed_turns":p_paralyzed_turns,
+			"slow_skip":      _p_slow_skip,
+			"regen_accum":  _regen_accum,
+			"hunger_accum": _hunger_accum,
 			"grid_x":      p_grid.x,
 			"grid_y":      p_grid.y,
 			"weapon":      p_weapon.duplicate(true),
@@ -1467,6 +2009,8 @@ func save_game() -> void:
 		"player_start_y": generator.player_start.y,
 		"stairs_x":       generator.stairs_pos.x,
 		"stairs_y":       generator.stairs_pos.y,
+		"rooms":          generator.rooms.map(func(r: Rect2i) -> Array:
+							return [r.position.x, r.position.y, r.size.x, r.size.y]),
 		"explored":       explored_arr,
 		"enemies":        enemies_arr,
 		"floor_items":    items_arr,
@@ -1477,6 +2021,19 @@ func save_game() -> void:
 		"shop_room":      [generator.shop_room.position.x, generator.shop_room.position.y,
 						   generator.shop_room.size.x,     generator.shop_room.size.y],
 		"shop_entered":   _shop_entered,
+		"vol_master":     vol_master,
+		"vol_bgm":        vol_bgm,
+		"vol_se":         vol_se,
+		"key_bindings":   key_bindings.duplicate(),
+		"bgm_key":        _current_bgm_key,
+		"in_shop_area":   _in_shop_area,
+		"mh_triggered":   _monster_house_triggered,
+		"has_mh":         generator.has_monster_house,
+		"mh_room":        [generator.monster_house_room.position.x, generator.monster_house_room.position.y,
+						   generator.monster_house_room.size.x,     generator.monster_house_room.size.y],
+		"traps":          traps.map(func(t: Dictionary) -> Dictionary:
+							return {"type": t["type"], "grid_x": t["grid_pos"].x, "grid_y": t["grid_pos"].y,
+									"triggered": t.get("triggered", false)}),
 	}
 
 	var file := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
@@ -1511,8 +2068,15 @@ func load_game() -> bool:
 	p_exp_next    = int(pd["exp_next"])
 	p_fullness    = int(pd["fullness"])
 	p_gold        = int(pd["gold"])
-	p_blind_turns = int(pd["blind_turns"])
+	p_blind_turns    = int(pd.get("blind_turns", 0))
+	p_poisoned_turns = int(pd.get("poisoned_turns", 0))
+	p_sleep_turns    = int(pd.get("sleep_turns", 0))
+	p_slow_turns      = int(pd.get("slow_turns", 0))
+	p_confused_turns  = int(pd.get("confused_turns", 0))
+	p_paralyzed_turns = int(pd.get("paralyzed_turns", 0))
+	_p_slow_skip      = bool(pd.get("slow_skip", false))
 	_regen_accum  = float(pd["regen_accum"])
+	_hunger_accum = float(pd.get("hunger_accum", 0.0))
 	p_grid        = Vector2i(int(pd["grid_x"]), int(pd["grid_y"]))
 	p_weapon      = pd.get("weapon", {})
 	p_shield      = pd.get("shield", {})
@@ -1529,6 +2093,10 @@ func load_game() -> bool:
 		data["map_tiles"],
 		int(data["player_start_x"]), int(data["player_start_y"]),
 		int(data["stairs_x"]),       int(data["stairs_y"]))
+	# 部屋データ復元（FOV判定に必要）
+	generator.rooms = []
+	for rd: Array in data.get("rooms", []):
+		generator.rooms.append(Rect2i(int(rd[0]), int(rd[1]), int(rd[2]), int(rd[3])))
 
 	# 探索済みタイル復元
 	explored.clear()
@@ -1564,17 +2132,23 @@ func load_game() -> bool:
 		var pos := Vector2i(int(ed["grid_x"]), int(ed["grid_y"]))
 		node.call("set_grid", pos.x, pos.y)
 		node.call("set_sprite", Assets.enemy_sprite(base_data.get("id", "")))
-		enemies.append({
-			"data":         base_data,
-			"hp":           int(ed["hp"]),
-			"grid_pos":     pos,
-			"node":         node,
-			"alerted":      bool(ed.get("alerted", false)),
-			"asleep":       bool(ed.get("asleep", false)),
-			"asleep_turns": int(ed.get("asleep_turns", 0)),
-			"poisoned":     int(ed.get("poisoned", 0)),
-			"sealed":       bool(ed.get("sealed", false)),
-		})
+		var edict := {
+			"data":            base_data,
+			"hp":              int(ed["hp"]),
+			"grid_pos":        pos,
+			"node":            node,
+			"alerted":         bool(ed.get("alerted", false)),
+			"asleep":          bool(ed.get("asleep", false)),
+			"asleep_turns":    int(ed.get("asleep_turns", 0)),
+			"poisoned":        int(ed.get("poisoned", 0)),
+			"sealed":          bool(ed.get("sealed", false)),
+			"slow_turns":      int(ed.get("slow_turns", 0)),
+			"slow_skip":       bool(ed.get("slow_skip", false)),
+			"confused_turns":  int(ed.get("confused_turns", 0)),
+			"paralyzed_turns": int(ed.get("paralyzed_turns", 0)),
+		}
+		enemies.append(edict)
+		_refresh_enemy_status_visual(edict)
 
 	# フロアアイテム復元
 	for fi in data["floor_items"]:
@@ -1616,33 +2190,95 @@ func load_game() -> bool:
 		node.call("set_sprite", Assets.item_type_sprite(item.get("type", 0)))
 		shop_items.append({"item": item, "price": price, "grid_pos": pos, "node": node})
 
+	# 音量・キーコンフィグ復元
+	if data.has("vol_master"):
+		vol_master = float(data["vol_master"])
+		AudioServer.set_bus_volume_db(AudioServer.get_bus_index("Master"), _linear_to_db_safe(vol_master))
+	if data.has("vol_bgm"):
+		vol_bgm = float(data["vol_bgm"])
+	if data.has("vol_se"):
+		vol_se = float(data["vol_se"])
+	if data.has("key_bindings"):
+		var saved_kb: Dictionary = data["key_bindings"]
+		for action in KEY_ACTIONS:
+			if saved_kb.has(action):
+				key_bindings[action] = int(saved_kb[action])
+	_apply_loaded_settings()
+	# BGM・エリアフラグ・MH・ワナ復元
+	_in_shop_area            = bool(data.get("in_shop_area", false))
+	_monster_house_triggered = bool(data.get("mh_triggered", false))
+	generator.has_monster_house = bool(data.get("has_mh", false))
+	var mhr: Array = data.get("mh_room", [0, 0, 0, 0])
+	generator.monster_house_room = Rect2i(int(mhr[0]), int(mhr[1]), int(mhr[2]), int(mhr[3]))
+	traps.clear()
+	for td: Dictionary in data.get("traps", []):
+		var tp: Vector2i = Vector2i(int(td["grid_x"]), int(td["grid_y"]))
+		var tt: String   = str(td["type"])
+		var triggered: bool = bool(td.get("triggered", false))
+		var tnode := _make_tile_node("", Color(0.15, 0.08, 0.08), Color.WHITE, 0)
+		tnode.z_index = 0
+		tnode.visible = false
+		_entity_layer.add_child(tnode)
+		tnode.call("set_grid", tp.x, tp.y)
+		tnode.call("set_sprite", Assets.TRAP)
+		if triggered:
+			tnode.visible = true
+		traps.append({"type": tt, "grid_pos": tp, "node": tnode, "triggered": triggered})
+	var saved_bgm: String = data.get("bgm_key", "explore")
+	if saved_bgm.is_empty():
+		saved_bgm = "explore"
+
 	# FOV・カメラ・HUD
 	_update_fov()
 	_sync_entity_visibility()
 	_update_camera()
 	_refresh_hud()
-	_play_bgm("explore")
+	_refresh_player_status_visual()
+	_play_bgm(saved_bgm)
 	add_message("セーブデータを読み込みました。（B%dF / Turn%d）" % [current_floor, turn_count])
 	return true
 
+## ロード後にオプションUIへ音量・キーコンフィグの値を反映する
+func _apply_loaded_settings() -> void:
+	# スライダーとラベルへ音量を反映（パネルが構築済みの場合のみ）
+	if is_instance_valid(_slider_master):
+		_slider_master.value = vol_master
+		_lbl_master_pct.text = "%d%%" % int(vol_master * 100)
+	if is_instance_valid(_slider_bgm):
+		_slider_bgm.value = vol_bgm
+		_lbl_bgm_pct.text = "%d%%" % int(vol_bgm * 100)
+	if is_instance_valid(_slider_se):
+		_slider_se.value = vol_se
+		_lbl_se_pct.text = "%d%%" % int(vol_se * 100)
+	# キーコンフィグボタンのラベルを更新
+	for action: String in KEY_ACTIONS:
+		var btn := _options_layer.find_child("keybind_" + action, true, false) as Button
+		if is_instance_valid(btn):
+			btn.text = OS.get_keycode_string(key_bindings.get(action, 0))
+
 # ─── BGM ─────────────────────────────────────────────────
+var _current_bgm_key: String = ""
+
 func _play_bgm(key: String) -> void:
+	if key == _current_bgm_key and _bgm_player.playing:
+		return   # 同じ曲が再生中なら何もしない
 	if not BGM.has(key):
 		return
 	var path: String = BGM[key]
 	if not ResourceLoader.exists(path):
 		return
-	# 同じ曲が再生中なら何もしない
 	var stream := load(path) as AudioStreamMP3
 	if stream == null:
 		return
-	stream.loop = true
+	stream.loop        = true
 	_bgm_player.stream    = stream
 	_bgm_player.volume_db = _linear_to_db_safe(vol_bgm)
 	_bgm_player.play()
+	_current_bgm_key = key
 
 func _stop_bgm() -> void:
 	_bgm_player.stop()
+	_current_bgm_key = ""
 
 # ─── オプション ───────────────────────────────────────────
 func _build_options_panel() -> void:
@@ -1698,22 +2334,30 @@ func _build_options_panel() -> void:
 	spacer.custom_minimum_size = Vector2(0, 6)
 	vol_container.add_child(spacer)
 
-	_lbl_master_pct = _add_volume_row(vol_container, "マスター音量", vol_master, func(v: float) -> void:
+	var master_row := _add_volume_row(vol_container, "マスター音量", vol_master, func(v: float) -> void:
 		vol_master = v
 		_lbl_master_pct.text = "%d%%" % int(v * 100)
 		AudioServer.set_bus_volume_db(
 			AudioServer.get_bus_index("Master"), _linear_to_db_safe(vol_master))
 	)
-	_lbl_bgm_pct = _add_volume_row(vol_container, "BGM 音量", vol_bgm, func(v: float) -> void:
+	_lbl_master_pct = master_row[0] as Label
+	_slider_master  = master_row[1] as HSlider
+
+	var bgm_row := _add_volume_row(vol_container, "BGM 音量", vol_bgm, func(v: float) -> void:
 		vol_bgm = v
 		_lbl_bgm_pct.text = "%d%%" % int(v * 100)
 		if is_instance_valid(_bgm_player):
 			_bgm_player.volume_db = _linear_to_db_safe(vol_bgm)
 	)
-	_lbl_se_pct = _add_volume_row(vol_container, "SE 音量", vol_se, func(v: float) -> void:
+	_lbl_bgm_pct = bgm_row[0] as Label
+	_slider_bgm  = bgm_row[1] as HSlider
+
+	var se_row := _add_volume_row(vol_container, "SE 音量", vol_se, func(v: float) -> void:
 		vol_se = v
 		_lbl_se_pct.text = "%d%%" % int(v * 100)
 	)
+	_lbl_se_pct = se_row[0] as Label
+	_slider_se  = se_row[1] as HSlider
 
 	# ── タブ2: キーコンフィグ ──
 	var key_outer := VBoxContainer.new()
@@ -1738,15 +2382,27 @@ func _build_options_panel() -> void:
 	reset_btn.pressed.connect(_reset_key_bindings)
 	key_outer.add_child(reset_btn)
 
+	# 冒険を諦めるボタン（赤系スタイル）
+	var give_up_btn := Button.new()
+	give_up_btn.text = "冒険を諦める"
+	give_up_btn.add_theme_color_override("font_color",          Color(1.00, 0.35, 0.30))
+	give_up_btn.add_theme_color_override("font_hover_color",    Color(1.00, 0.55, 0.50))
+	give_up_btn.add_theme_color_override("font_pressed_color",  Color(0.80, 0.20, 0.15))
+	give_up_btn.pressed.connect(_show_give_up_confirm)
+	vbox.add_child(give_up_btn)
+
 	# 閉じるボタン
 	var close_btn := Button.new()
 	close_btn.text = "閉じる  [ Esc ]"
 	close_btn.pressed.connect(_close_options)
 	vbox.add_child(close_btn)
 
+	# 確認ダイアログ（初期非表示）
+	_build_confirm_give_up_panel()
+
 ## スライダー行を生成して追加。パーセント表示ラベルを返す
 func _add_volume_row(parent: Control, label_text: String,
-		initial: float, on_change: Callable) -> Label:
+		initial: float, on_change: Callable) -> Array:
 	var hbox := HBoxContainer.new()
 	hbox.add_theme_constant_override("separation", 8)
 	parent.add_child(hbox)
@@ -1773,7 +2429,7 @@ func _add_volume_row(parent: Control, label_text: String,
 	hbox.add_child(pct)
 
 	slider.value_changed.connect(on_change)
-	return pct
+	return [pct, slider]
 
 ## キーコンフィグ行を生成する
 func _add_key_row(parent: Control, action: String) -> void:
@@ -1834,7 +2490,80 @@ func _open_options() -> void:
 
 func _close_options() -> void:
 	_options_layer.visible = false
+	if is_instance_valid(_confirm_layer):
+		_confirm_layer.visible = false
 	game_state = "playing"
+
+## 「冒険を諦める」確認ダイアログを構築（初回のみ）
+func _build_confirm_give_up_panel() -> void:
+	_confirm_layer = CanvasLayer.new()
+	_confirm_layer.layer   = 12   # オプションより手前
+	_confirm_layer.visible = false
+	add_child(_confirm_layer)
+
+	var overlay := ColorRect.new()
+	overlay.color = Color(0, 0, 0, 0.55)
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_confirm_layer.add_child(overlay)
+
+	var panel := Panel.new()
+	panel.custom_minimum_size = Vector2(360, 160)
+	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	panel.offset_left   = -180.0
+	panel.offset_top    = -80.0
+	panel.offset_right  =  180.0
+	panel.offset_bottom =  80.0
+	_confirm_layer.add_child(panel)
+
+	var margin := MarginContainer.new()
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for side in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(side, 20)
+	panel.add_child(margin)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 16)
+	margin.add_child(vbox)
+
+	var lbl := Label.new()
+	lbl.text = "本当に冒険を諦めますか？"
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_size_override("font_size", 16)
+	vbox.add_child(lbl)
+
+	var hbox := HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 16)
+	hbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	vbox.add_child(hbox)
+
+	var yes_btn := Button.new()
+	yes_btn.text = "はい（諦める）"
+	yes_btn.custom_minimum_size = Vector2(140, 0)
+	yes_btn.add_theme_color_override("font_color",         Color(1.00, 0.35, 0.30))
+	yes_btn.add_theme_color_override("font_hover_color",   Color(1.00, 0.55, 0.50))
+	yes_btn.add_theme_color_override("font_pressed_color", Color(0.80, 0.20, 0.15))
+	yes_btn.pressed.connect(_confirm_give_up)
+	hbox.add_child(yes_btn)
+
+	var no_btn := Button.new()
+	no_btn.text = "いいえ（続ける）"
+	no_btn.custom_minimum_size = Vector2(140, 0)
+	no_btn.pressed.connect(_cancel_give_up)
+	hbox.add_child(no_btn)
+
+func _show_give_up_confirm() -> void:
+	if is_instance_valid(_confirm_layer):
+		_confirm_layer.visible = true
+
+func _cancel_give_up() -> void:
+	if is_instance_valid(_confirm_layer):
+		_confirm_layer.visible = false
+
+func _confirm_give_up() -> void:
+	if is_instance_valid(_confirm_layer):
+		_confirm_layer.visible = false
+	_close_options()
+	_trigger_game_over("冒険を諦めた")
 
 func _linear_to_db_safe(linear: float) -> float:
 	if linear <= 0.0:
@@ -1861,6 +2590,11 @@ func _play_se(key: String) -> void:
 		if is_instance_valid(player):
 			player.queue_free()
 	)
+
+## アイテム辞書から SE キーを解決して再生する
+## item に "se" フィールドがあればそれを優先、なければ "general_item"
+func _play_item_se(item: Dictionary) -> void:
+	_play_se(item.get("se", "general_item"))
 
 # ─── 演出 ────────────────────────────────────────────────
 ## ダメージ数字をグリッド座標に浮かせて表示

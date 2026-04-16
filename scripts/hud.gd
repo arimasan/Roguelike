@@ -185,35 +185,55 @@ func _draw_minimap(vp: Vector2) -> void:
 					col = Color(0.22, 0.22, 0.28) if not visible else Color(0.35, 0.35, 0.42)
 				DungeonGenerator.TILE_STAIRS:
 					col = Color(0.50, 0.50, 0.10) if not visible else Color(0.90, 0.88, 0.20)
-				_:  # FLOOR
+				_:  # FLOOR / SHOP_FLOOR
 					col = Color(0.35, 0.35, 0.40) if not visible else Color(0.60, 0.60, 0.65)
 			draw_rect(Rect2(ox + x * CELL, oy + y * CELL, CELL, CELL), col)
 
-	# ゴールド（探索済み・黄色）
-	for pile in gref.gold_piles:
-		var gp: Vector2i = pile["grid_pos"]
-		if gref.explored.has(gp):
-			draw_rect(Rect2(ox + gp.x * CELL, oy + gp.y * CELL, CELL, CELL),
-				Color(1.00, 0.85, 0.00))
-
-	# アイテム（探索済み・淡黄色）
+	# アイテム・ゴールド（探索済み・水色）
+	var C_ITEM := Color(0.30, 0.85, 1.00)
 	for fi in gref.floor_items:
 		var fp: Vector2i = fi["grid_pos"]
 		if gref.explored.has(fp):
-			draw_rect(Rect2(ox + fp.x * CELL, oy + fp.y * CELL, CELL, CELL),
-				Color(0.85, 0.85, 0.20))
+			draw_rect(Rect2(ox + fp.x * CELL, oy + fp.y * CELL, CELL, CELL), C_ITEM)
+	for pile in gref.gold_piles:
+		var gp: Vector2i = pile["grid_pos"]
+		if gref.explored.has(gp):
+			draw_rect(Rect2(ox + gp.x * CELL, oy + gp.y * CELL, CELL, CELL), C_ITEM)
+	for si in gref.shop_items:
+		var sp: Vector2i = si["grid_pos"]
+		if gref.explored.has(sp):
+			draw_rect(Rect2(ox + sp.x * CELL, oy + sp.y * CELL, CELL, CELL), C_ITEM)
 
-	# 視界内の敵（赤）
+	# ワナ（発動済み・探索済み → × 印）
+	var C_TRAP := Color(0.95, 0.60, 0.10)
+	for trap in gref.traps:
+		if not trap.get("triggered", false):
+			continue
+		var tp: Vector2i = trap["grid_pos"]
+		if not gref.explored.has(tp):
+			continue
+		var tx: float = ox + tp.x * CELL
+		var ty: float = oy + tp.y * CELL
+		draw_line(Vector2(tx, ty), Vector2(tx + CELL, ty + CELL), C_TRAP, 1.0)
+		draw_line(Vector2(tx + CELL, ty), Vector2(tx, ty + CELL), C_TRAP, 1.0)
+
+	# 敵（視界内・赤）
 	for enemy in gref.enemies:
 		var ep: Vector2i = enemy["grid_pos"]
 		if gref.fov_visible.has(ep):
 			draw_rect(Rect2(ox + ep.x * CELL, oy + ep.y * CELL, CELL, CELL),
-				Color(0.90, 0.18, 0.18))
+				Color(0.95, 0.15, 0.15))
 
-	# プレイヤー（青・1px大きめ）
+	# 階段（探索済み・黄色）
+	var stairs: Vector2i = gref.generator.stairs_pos
+	if gref.explored.has(stairs):
+		draw_rect(Rect2(ox + stairs.x * CELL - 1, oy + stairs.y * CELL - 1, CELL + 2, CELL + 2),
+			Color(1.00, 0.90, 0.10))
+
+	# プレイヤー（黄色・1px大きめ）
 	var pp: Vector2i = gref.p_grid
 	draw_rect(Rect2(ox + pp.x * CELL - 1, oy + pp.y * CELL - 1, CELL + 2, CELL + 2),
-		Color(0.25, 0.60, 1.00))
+		Color(1.00, 0.90, 0.10))
 
 	# 「M: マップ」ラベル
 	var font := ThemeDB.fallback_font
@@ -267,7 +287,7 @@ func _draw_inventory(vp: Vector2, storage_mode: bool = false) -> void:
 				name_str = "%s（%d個入り）" % [name_str, cnt]
 			# アイコン描画（20×20）
 			const ICON_SIZE := 20
-			var icon_tex: Texture2D = _icon_cache.get(item.get("type", -1))
+			var icon_tex: Texture2D = _icon_cache.get(int(item.get("type", -1)))
 			var icon_drawn := false
 			if icon_tex != null:
 				var icon_mod := Color(0.45, 0.45, 0.45) if is_pot_self else Color.WHITE
@@ -383,12 +403,12 @@ func _draw_shop(vp: Vector2) -> void:
 				var si: Dictionary = items[i]
 				item_name = si["item"].get("name", "？")
 				price     = si["price"]
-				type_int  = si["item"].get("type", -1)
+				type_int  = int(si["item"].get("type", -1))
 			else:
 				var inv_item: Dictionary = items[i]
 				item_name = inv_item.get("name", "？")
 				price     = ItemData.sell_price(inv_item)
-				type_int  = inv_item.get("type", -1)
+				type_int  = int(inv_item.get("type", -1))
 
 			var row_top := py + HEADER_H + ROW_H * float(row)
 			var iy      := row_top + ROW_H * 0.75

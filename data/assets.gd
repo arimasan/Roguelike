@@ -37,7 +37,12 @@ const ITEM_TYPES := {
 	4: "res://assets/sprites/items/pot.png",      # 箱
 	5: "res://assets/sprites/items/ring.png",     # 指輪
 	6: "res://assets/sprites/items/staff.png",    # 杖
+	7: "res://assets/sprites/items/potion.png",   # 薬
 }
+
+# ─── 店 ─────────────────────────────────────────────────────
+## ワナスプライト（発動後に表示）
+const TRAP := "res://assets/sprites/traps/trap.png"
 
 # ─── 店 ─────────────────────────────────────────────────────
 const SHOP_KEEPER  := "res://assets/sprites/shop/shopkeeper.png"
