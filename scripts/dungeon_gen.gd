@@ -1,8 +1,8 @@
 class_name DungeonGenerator
 extends RefCounted
 
-const MAP_W    := 60
-const MAP_H    := 40
+const MAP_W    := 80
+const MAP_H    := 50
 const TILE_WALL       := 0
 const TILE_FLOOR      := 1
 const TILE_STAIRS     := 2
@@ -37,15 +37,24 @@ var monster_house_trap_pos:     Array   = []   # Array[Vector2i]
 
 # ─── 生成メイン ───────────────────────────────────────────
 var _floor_num: int = 0   # generate() から各サブ関数で参照するために保持
+var pattern_name: String = ""   # 生成されたパターン名（デバッグ表示用）
 
 func generate(floor_num: int) -> void:
 	_floor_num = floor_num
 	_init_map()
-	_place_rooms()
-	_connect_all_rooms()
+	# パターン選択＋部屋/通路生成
+	var constraints: Dictionary = DungeonPatterns.generate_pattern(self)
+	pattern_name = constraints.get("name", "?")
 	_place_stairs_and_player()
-	_try_setup_shop()           # スポーン点確定より先に特殊部屋を確保
-	_try_setup_monster_house()
+	# 店
+	if constraints.get("allow_shop", true):
+		var shop_exclude: int = int(constraints.get("shop_exclude_idx", -1))
+		_try_setup_shop(shop_exclude)
+	# モンスターハウス
+	if constraints.get("force_mh", false) and rooms.size() > 0:
+		_force_monster_house(int(constraints.get("mh_room_idx", -1)))
+	elif not constraints.get("no_mh", false):
+		_try_setup_monster_house()
 	_pick_spawn_points(floor_num)
 
 func _init_map() -> void:
@@ -69,40 +78,7 @@ func _init_map() -> void:
 			row.append(TILE_WALL)
 		map.append(row)
 
-func _place_rooms() -> void:
-	var attempts := MAX_ROOMS * 5
-	while rooms.size() < MAX_ROOMS and attempts > 0:
-		attempts -= 1
-		var w := randi_range(MIN_ROOM_W, MAX_ROOM_W)
-		var h := randi_range(MIN_ROOM_H, MAX_ROOM_H)
-		var x := randi_range(1, MAP_W - w - 1)
-		var y := randi_range(1, MAP_H - h - 1)
-		var nr := Rect2i(x, y, w, h)
-		var ok := true
-		for r in rooms:
-			if nr.intersects(Rect2i(r.position - Vector2i(1,1), r.size + Vector2i(2,2))):
-				ok = false
-				break
-		if ok:
-			_carve_room(nr)
-			rooms.append(nr)
-
-func _connect_all_rooms() -> void:
-	for i in range(1, rooms.size()):
-		_connect(rooms[i - 1], rooms[i])
-	# 追加ループで接続性を上げる
-	if rooms.size() > 3:
-		_connect(rooms[0], rooms[rooms.size() - 1])
-
-func _connect(a: Rect2i, b: Rect2i) -> void:
-	var ac := _center(a)
-	var bc := _center(b)
-	if randi() % 2 == 0:
-		_h_tunnel(ac.x, bc.x, ac.y)
-		_v_tunnel(ac.y, bc.y, bc.x)
-	else:
-		_v_tunnel(ac.y, bc.y, ac.x)
-		_h_tunnel(ac.x, bc.x, bc.y)
+## 部屋配置・通路生成は DungeonPatterns に移動済み。
 
 func _place_stairs_and_player() -> void:
 	player_start = _center(rooms[0])
@@ -147,12 +123,17 @@ func _pick_spawn_points(floor_num: int) -> void:
 	if sp != Vector2i(-1, -1) and sp != player_start and sp not in shop_reserved:
 		item_spawns.append(sp)
 
-func _try_setup_shop() -> void:
+func _try_setup_shop(exclude_idx: int = -1) -> void:
 	if rooms.size() < 3 or randf() >= DungeonConfig.shop_chance(_floor_num):
 		return
-	# 最初・最後の部屋以外から候補を選ぶ
+	# 最初・最後の部屋以外（＋除外指定）かつ 5×5 以上の部屋から候補を選ぶ
 	var candidates: Array = []
 	for i in range(1, rooms.size() - 1):
+		if i == exclude_idx:
+			continue
+		var r: Rect2i = rooms[i]
+		if r.size.x < 5 or r.size.y < 5:
+			continue
 		candidates.append(rooms[i])
 	if candidates.is_empty():
 		return
@@ -206,10 +187,29 @@ func _try_setup_shop() -> void:
 		else:
 			shop_keeper_pos = shop_item_positions[0] as Vector2i
 
+## パターン制約によるMH強制配置。room_idx=-1 ならプレイヤー開始/階段以外からランダム。
+func _force_monster_house(room_idx: int) -> void:
+	if rooms.is_empty():
+		return
+	if room_idx < 0 or room_idx >= rooms.size():
+		var candidates: Array = []
+		for i in range(0, rooms.size()):
+			if i == 0:
+				continue
+			if rooms.size() > 1 and i == rooms.size() - 1:
+				continue
+			candidates.append(i)
+		if candidates.is_empty():
+			room_idx = rooms.size() - 1
+		else:
+			room_idx = candidates[randi() % candidates.size()]
+	monster_house_room = rooms[room_idx]
+	has_monster_house  = true
+	_populate_mh_spawns()
+
 func _try_setup_monster_house() -> void:
 	if rooms.size() < 3 or randf() >= DungeonConfig.monster_house_chance(_floor_num):
 		return
-	# 最初・最後・店以外の部屋から候補を選ぶ
 	var candidates: Array = []
 	for i in range(1, rooms.size() - 1):
 		if has_shop and rooms[i] == shop_room:
@@ -217,11 +217,12 @@ func _try_setup_monster_house() -> void:
 		candidates.append(rooms[i])
 	if candidates.is_empty():
 		return
-
 	monster_house_room = candidates[randi() % candidates.size()] as Rect2i
 	has_monster_house  = true
+	_populate_mh_spawns()
 
-	# 部屋内のフロアタイルをすべて収集してシャッフル
+## MH部屋のスポーン位置リスト（敵/アイテム/ワナ）を生成する共通処理
+func _populate_mh_spawns() -> void:
 	var floor_tiles: Array = []
 	for y in range(monster_house_room.position.y, monster_house_room.end.y):
 		for x in range(monster_house_room.position.x, monster_house_room.end.x):
@@ -229,31 +230,26 @@ func _try_setup_monster_house() -> void:
 			if t == TILE_FLOOR or t == TILE_SHOP_FLOOR:
 				floor_tiles.append(Vector2i(x, y))
 	floor_tiles.shuffle()
-
 	if floor_tiles.size() < 5:
 		has_monster_house = false
 		return
-
 	var idx: int = 0
-
-	# 敵スポーン: 床タイルの 50〜65%（最大 15 体）
-	var enemy_count: int = min(int(floor_tiles.size() * randf_range(0.50, 0.65)), 15)
+	# 敵スポーン: 床タイルの 50〜65%（最大25体、大部屋対応で上限引き上げ）
+	var enemy_count: int = min(int(floor_tiles.size() * randf_range(0.50, 0.65)), 25)
 	for _i in enemy_count:
 		if idx >= floor_tiles.size():
 			break
 		monster_house_enemy_spawns.append(floor_tiles[idx] as Vector2i)
 		idx += 1
-
-	# アイテム: 3〜5 個
-	var item_count: int = min(randi_range(3, 5), floor_tiles.size() - idx)
+	# アイテム: 3〜6 個
+	var item_count: int = min(randi_range(3, 6), floor_tiles.size() - idx)
 	for _i in item_count:
 		if idx >= floor_tiles.size():
 			break
 		monster_house_item_spawns.append(floor_tiles[idx] as Vector2i)
 		idx += 1
-
-	# ワナ: 3〜6 個
-	var trap_count: int = min(randi_range(3, 6), floor_tiles.size() - idx)
+	# ワナ: 3〜8 個
+	var trap_count: int = min(randi_range(3, 8), floor_tiles.size() - idx)
 	for _i in trap_count:
 		if idx >= floor_tiles.size():
 			break

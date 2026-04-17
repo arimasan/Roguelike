@@ -165,6 +165,10 @@ static func save_game(game: Node) -> void:
 		"bgm_key":        game._current_bgm_key,
 		"in_shop_area":   game._in_shop_area,
 		"mh_triggered":   game._monster_house_triggered,
+		"thief_mode":     game._thief_mode,
+		"skill_points":   game.skill_points,
+		"skills_unlocked": (game.skills_unlocked as Dictionary).duplicate(),
+		"skill_survived_fatal": game._skill_survived_fatal,
 		"has_mh":         game.generator.has_monster_house,
 		"mh_room":        [game.generator.monster_house_room.position.x, game.generator.monster_house_room.position.y,
 						   game.generator.monster_house_room.size.x,     game.generator.monster_house_room.size.y],
@@ -193,6 +197,11 @@ static func load_game(game: Node) -> bool:
 		return false
 	var data: Dictionary = json.get_data()
 	if not data.has("version"):
+		return false
+	# マップサイズ互換チェック（旧サイズのセーブは読み込めない）
+	var tiles: Array = data.get("map_tiles", [])
+	if tiles.size() != DungeonGenerator.MAP_W * DungeonGenerator.MAP_H:
+		delete_save()
 		return false
 
 	# プレイヤーステータス復元
@@ -372,6 +381,10 @@ static func load_game(game: Node) -> bool:
 	# BGM・エリアフラグ・MH・ワナ復元
 	game._in_shop_area            = bool(data.get("in_shop_area", false))
 	game._monster_house_triggered = bool(data.get("mh_triggered", false))
+	game._thief_mode              = bool(data.get("thief_mode", false))
+	game.skill_points             = int(data.get("skill_points", 0))
+	game.skills_unlocked          = data.get("skills_unlocked", {})
+	game._skill_survived_fatal    = bool(data.get("skill_survived_fatal", false))
 	game.generator.has_monster_house = bool(data.get("has_mh", false))
 	var mhr: Array = data.get("mh_room", [0, 0, 0, 0])
 	game.generator.monster_house_room = Rect2i(int(mhr[0]), int(mhr[1]), int(mhr[2]), int(mhr[3]))

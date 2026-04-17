@@ -70,6 +70,8 @@ static func build_actions(item: Dictionary) -> Array:
 		ItemData.TYPE_POT:
 			if item.get("effect","") == "storage":
 				return [["view","見る"], ["store","入れる"], ["throw","投げる"], ["drop","置く"]]
+			if item.get("effect","") == "synthesis":
+				return [["view","見る"], ["store","入れる"], ["throw","投げる"], ["drop","置く"]]
 			return [["use","使う"], ["throw","投げる"], ["drop","置く"]]
 	return [["use","使う"], ["throw","投げる"], ["drop","置く"]]
 
@@ -253,7 +255,7 @@ static func handle_storage_pot_input(game: Node, kc: int) -> void:
 	var contents: Array = pot.get("contents", [])
 	match kc:
 		KEY_ESCAPE, KEY_I:
-			game.game_state = "playing"
+			game.game_state = "inventory"
 			game._storage_pot_iid = -1
 			game._refresh_hud()
 		KEY_UP, KEY_K:
@@ -340,9 +342,32 @@ static func handle_storage_select_input(game: Node, kc: int) -> void:
 		game.game_state = "storage_pot"
 		game._refresh_hud()
 		return
+	# 合成の箱: 同タイプの武器/盾が既にあれば自動合成（素材は消費、ベースを更新）
+	if pot.get("effect", "") == "synthesis":
+		var result: Dictionary = SealSystem.try_merge_in_pot(pot["contents"] as Array, target_item)
+		if result.get("merged", false):
+			game.p_inventory.remove_at(cur)
+			game.inv_cursor = min(cur, max(0, game.p_inventory.size() - 1))
+			for msg: String in result.get("messages", []):
+				game.add_message(msg)
+			game.add_message("合成完了！")
+			game._play_se("general_item")
+			# 合成後は storage_select に留まる（さらに素材追加可能）
+			if game.p_inventory.is_empty():
+				game.game_state = "storage_pot"
+			game._refresh_hud()
+			return
 	(pot["contents"] as Array).append(target_item)
 	game.p_inventory.remove_at(cur)
 	game.inv_cursor = min(cur, max(0, game.p_inventory.size() - 1))
-	game.add_message("%s を箱にしまった。" % target_item.get("name", "?"))
-	game.game_state = "storage_pot"
+	game.add_message("%s を箱にしまった。" % SealSystem.display_name(target_item))
+	# 容量に空きがあり、インベントリにもまだアイテムがあれば storage_select に留まる
+	var new_cap: int = int(pot.get("capacity", 3))
+	if (pot["contents"] as Array).size() >= new_cap:
+		game.add_message("箱がいっぱいになった。")
+		game.game_state = "storage_pot"
+	elif game.p_inventory.is_empty():
+		game.game_state = "storage_pot"
+	else:
+		game.game_state = "storage_select"
 	game._refresh_hud()

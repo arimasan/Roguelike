@@ -21,12 +21,21 @@ extends RefCounted
 ## * 状態異常の付与（ItemEffects.apply_status_to_*）
 ## * ゲームオーバー画面遷移（game._trigger_game_over）
 
-# ─── 攻撃／防御力計算 ─────────────────────────────────────
+# ─── 攻撃／防御力計算（修正値＋印ボーナス込み） ────────────
 static func calc_atk(game: Node) -> int:
-	return int(game.p_atk_base) + int(game.p_weapon.get("atk", 0)) + int(game.p_ring.get("atk", 0))
+	var weapon: Dictionary = game.p_weapon
+	var base: int = int(game.p_atk_base) + int(weapon.get("atk", 0)) + int(game.p_ring.get("atk", 0))
+	base += int(weapon.get("plus", 0))
+	base += SealSystem.seal_atk_bonus(weapon)
+	base += SkillTree.atk_bonus(game)
+	return base
 
 static func calc_def(game: Node) -> int:
-	return int(game.p_def_base) + int(game.p_shield.get("def", 0)) + int(game.p_ring.get("def", 0))
+	var shield: Dictionary = game.p_shield
+	var base: int = int(game.p_def_base) + int(shield.get("def", 0)) + int(game.p_ring.get("def", 0))
+	base += int(shield.get("plus", 0))
+	base += SealSystem.seal_def_bonus(shield)
+	return base
 
 # ─── プレイヤー → 敵 ──────────────────────────────────────
 static func player_attack(game: Node, enemy: Dictionary) -> void:
@@ -35,9 +44,13 @@ static func player_attack(game: Node, enemy: Dictionary) -> void:
 	if diff != Vector2i.ZERO:
 		game.p_facing = Vector2i(sign(diff.x), sign(diff.y))
 	var dmg: int = max(1, calc_atk(game) - int(enemy["data"].get("def", 0)))
-	# 炎の剣ボーナス
-	if game.p_weapon.get("effect", "") == "burn":
+	# 炎印（武器固有 or 合成印）
+	if game.p_weapon.get("effect", "") == "burn" or SealSystem.has_burn_seal(game.p_weapon):
 		dmg += randi_range(1, 4)
+	# 会心の一撃（combat_2）: 10%で1.5倍
+	if SkillTree.has(game, "combat_2") and randf() < 0.10:
+		dmg = int(dmg * 1.5)
+		game.add_message("会心の一撃！")
 	enemy["hp"] -= dmg
 	enemy["alerted"] = true
 	enemy["node"].call("flash", Color(1.0, 0.2, 0.2))
@@ -46,6 +59,16 @@ static func player_attack(game: Node, enemy: Dictionary) -> void:
 	game.add_message("%s に %d ダメージ！" % [enemy["data"]["name"], dmg])
 	if enemy["hp"] <= 0:
 		kill_enemy(game, enemy)
+		return
+	if SealSystem.has_curse_seal(game.p_weapon) and randf() < 0.05:
+		ItemEffects.apply_status_to_enemy(game, enemy, "paralyze", 3)
+		game.add_message("呪いの印が発動！")
+	# 連続攻撃（combat_3）: 15%で2回目の攻撃（再帰しない）
+	if not bool(game._double_attack_active) and SkillTree.has(game, "combat_3") and randf() < 0.10:
+		game._double_attack_active = true
+		game.add_message("連続攻撃！")
+		player_attack(game, enemy)
+		game._double_attack_active = false
 
 # ─── 敵撃破＋経験値・レベル処理 ────────────────────────────
 ## by_companion=true のときは経験値を与えない（仲間が倒した場合）
@@ -55,6 +78,12 @@ static func kill_enemy(game: Node, enemy: Dictionary, by_companion: bool = false
 		_try_recruit(game, enemy)
 		return
 	game.add_message("%s を倒した！" % enemy["data"]["name"])
+	# 合成虫: 吸収していたアイテムをドロップ
+	if enemy.has("absorbed"):
+		var ep: Vector2i = enemy["grid_pos"] as Vector2i
+		for absorbed_item: Dictionary in enemy["absorbed"]:
+			game._place_floor_item(absorbed_item, game._find_free_drop_pos(ep))
+			game.add_message("%s が落ちた。" % SealSystem.display_name(absorbed_item))
 	# 図鑑登録（初撃破時のみメッセージ）
 	var enemy_id: String = enemy["data"].get("id", "")
 	if Bestiary.discover_enemy(enemy_id):
@@ -127,7 +156,8 @@ static func check_level_up(game: Node) -> void:
 		game.p_hp       = min(int(game.p_hp) + 8, int(game.p_hp_max))
 		game.p_atk_base = int(game.p_atk_base) + 1
 		game.p_def_base = int(game.p_def_base) + 1
-		game.add_message("レベルアップ！ LV %d になった！" % int(game.p_level))
+		game.skill_points = int(game.skill_points) + 1
+		game.add_message("レベルアップ！ LV %d になった！（SP+1）" % int(game.p_level))
 
 # ─── 敵 → プレイヤー被弾 ──────────────────────────────────
 ## source: ダメージ源のテキスト（敵名／"空腹"／"毒"／"爆発の本" など）
@@ -141,6 +171,13 @@ static func apply_damage_to_player(game: Node, dmg: int, source: String) -> void
 	if source != "":
 		game.add_message("%s から %d ダメージ！" % [source, dmg])
 	if int(game.p_hp) <= 0:
+		# 不屈（survival_4）: フロア1回だけHP1で耐える
+		if SkillTree.has(game, "survival_4") and not game._skill_survived_fatal:
+			game.p_hp = 1
+			game._skill_survived_fatal = true
+			game.add_message("不屈のスキルが発動！ HP1で踏みとどまった！")
+			game._player_node.call("flash", Color(1.0, 1.0, 0.2))
+			return
 		game.p_hp = 0
 		var cause: String
 		if source == "空腹":

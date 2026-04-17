@@ -14,6 +14,7 @@ const ALL: Array = [
 	{"id":"alarm",    "name":"警報のワナ",       "break_chance":0.90, "se":"trap"},
 	{"id":"slow",     "name":"鈍足のワナ",       "break_chance":0.55, "se":"curse"},
 	{"id":"confuse",  "name":"混乱のワナ",       "break_chance":0.60, "se":"curse"},
+	{"id":"unequip",  "name":"装備外しのワナ",   "break_chance":0.50, "se":"trap"},
 ]
 
 static func get_by_id(trap_id: String) -> Dictionary:

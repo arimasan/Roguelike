@@ -44,6 +44,9 @@ func _draw() -> void:
 		"shop":
 			_draw_hud_base(vp)
 			_draw_shop(vp)
+		"skill_tree":
+			_draw_hud_base(vp)
+			SkillTreeUI.draw(self, vp, game_ref)
 		"dead":
 			_draw_hud_base(vp)
 			_draw_game_over(vp)
@@ -133,6 +136,14 @@ func _draw_hud_base(vp: Vector2) -> void:
 	draw_string(font, Vector2(fx, fy),
 		"Turn %d" % gref.turn_count,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.55, 0.55, 0.55))
+	# デバッグ: マップパターン名（フロア番号の下に表示）
+	if gref.debug_mode and gref.generator != null:
+		var pname: String = gref.generator.pattern_name
+		if not pname.is_empty():
+			fy += 16
+			draw_string(font, Vector2(fx, fy),
+				"[%s]" % pname,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.5, 0.8, 1.0, 0.7))
 
 	# ── メッセージログ ────────────────────────────────────
 	_draw_messages(vp, font)
@@ -270,7 +281,7 @@ func _draw_inventory(vp: Vector2, storage_mode: bool = false) -> void:
 		var pot_cnt := 0
 		for it in gref.p_inventory:
 			if it.get("_iid", -1) == gref._storage_pot_iid:
-				pot_cap = int(it.get("capacity", 0))
+				pot_cap = int(it.get("capacity", 3))
 				pot_cnt = (it.get("contents", []) as Array).size()
 				break
 		title_text = "─── 何をしまいますか？ （%d/%d） ───" % [pot_cnt, pot_cap]
@@ -302,14 +313,19 @@ func _draw_inventory(vp: Vector2, storage_mode: bool = false) -> void:
 				col = Color.WHITE
 			elif is_floor_entry:
 				col = Color(0.70, 0.90, 0.70)   # 薄緑で床アイテムを示す
+			elif item.get("cursed", false):
+				col = Color(0.85, 0.30, 0.30)   # 呪い: 赤みがかった色
+			elif item.get("blessed", false):
+				col = Color(1.00, 0.95, 0.40)   # 祝福: 金色
 			else:
 				col = ItemData.type_color(item.get("type", 0))
-			# 保存の箱は中身/容量を表示
-			var name_str: String = item.get("name", "?")
-			if item.get("effect", "") == "storage":
+			# 武器/盾は修正値＋印付き表示、箱は中身/容量表示
+			var name_str: String = SealSystem.display_name(item)
+			var pot_eff: String = item.get("effect", "")
+			if pot_eff == "storage" or pot_eff == "synthesis":
 				var cnt: int = item.get("contents", []).size()
-				var cap: int = int(item.get("capacity", 0))
-				name_str = "%s（%d/%d）" % [name_str, cnt, cap]
+				var cap: int = int(item.get("capacity", 3))
+				name_str = "%s（%d/%d）" % [item.get("name", "?"), cnt, cap]
 			# アイコン描画（20×20）
 			const ICON_SIZE := 20
 			var icon_tex: Texture2D = _icon_cache.get(int(item.get("type", -1)))
@@ -356,7 +372,7 @@ func _draw_storage_pot(vp: Vector2) -> void:
 	var title_x := vp.x / 2.0 - 160.0
 	var title_y := 40.0
 	var contents: Array = pot.get("contents", [])
-	var capacity: int = int(pot.get("capacity", 0))
+	var capacity: int = int(pot.get("capacity", 3))
 	var title_text := "─── %s （%d/%d） ───" % [pot.get("name", "保存の箱"), contents.size(), capacity]
 	draw_string(font, Vector2(title_x, title_y), title_text,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color(0.60, 0.90, 1.00))

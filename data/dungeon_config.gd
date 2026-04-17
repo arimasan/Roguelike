@@ -10,6 +10,8 @@ extends RefCounted
 #
 # 設定キー一覧（将来追加分もここに記載する）:
 #   shop_chance      : float  店の出現確率 0.0〜1.0
+#   curse_chance     : float  アイテムが呪われる確率 0.0〜1.0（デフォルト 0.0625）
+#   bless_chance     : float  アイテムが祝福される確率 0.0〜1.0（デフォルト 0.0625）
 #   enemy_density    : float  敵数倍率（1.0=標準）  ※将来用
 #   item_density     : float  アイテム数倍率         ※将来用
 #   gold_multiplier  : float  金額倍率               ※将来用
@@ -47,3 +49,9 @@ static func shop_chance(floor_num: int) -> float:
 
 static func monster_house_chance(floor_num: int) -> float:
 	return float(get_floor_config(floor_num).get("monster_house_chance", 0.30))
+
+static func curse_chance(floor_num: int) -> float:
+	return float(get_floor_config(floor_num).get("curse_chance", 0.0625))
+
+static func bless_chance(floor_num: int) -> float:
+	return float(get_floor_config(floor_num).get("bless_chance", 0.0625))

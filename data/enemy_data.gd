@@ -570,6 +570,39 @@ const ALL: Array = [
 		"info": "迷宮の最奥に座す神。裁きの雷で部屋ごと焼き尽くす。",
 		"recruit_line": "…驚きました。我を打ち倒すとは。\nあなたの旅、最後まで見届けましょう。",
 	},
+	# ── 特殊：合成虫（投げたアイテムを飲み込んで合成する） ─────
+	{
+		"id": "synth_bug",
+		"name": "合成虫",
+		"symbol": "合",
+		"color": Color(0.40, 0.85, 0.55),
+		"hp": 50, "atk": 8, "def": 5, "exp": 15,
+		"floor_min": 5, "floor_max": 30,
+		"behavior": "normal",
+		"synthesis": true,
+		"info": "投げたアイテムを飲み込む不思議な虫。同種の装備を2つ飲み込ませると合成して吐き出す。",
+	},
+	# ── 泥棒イベント専用（通常フロアには出現しない） ────────────
+	{
+		"id": "shopkeeper_angry",
+		"name": "怒れる店主",
+		"symbol": "店",
+		"color": Color(1.0, 0.2, 0.1),
+		"hp": 300, "atk": 55, "def": 25, "exp": 0,
+		"floor_min": 999, "floor_max": 999,
+		"behavior": "fast",
+		"info": "商品を盗まれて激怒した店主。その怒りは底知れない。",
+	},
+	{
+		"id": "thief_guard",
+		"name": "盗賊番",
+		"symbol": "G",
+		"color": Color(0.9, 0.7, 0.1),
+		"hp": 80, "atk": 35, "def": 12, "exp": 0,
+		"floor_min": 999, "floor_max": 999,
+		"behavior": "fast",
+		"info": "泥棒を追い詰めるために駆けつける番人。足が速い。",
+	},
 ]
 
 static func get_by_id(enemy_id: String) -> Dictionary:

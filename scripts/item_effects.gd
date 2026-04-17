@@ -22,6 +22,11 @@ extends RefCounted
 
 # ─── 状態異常付与 ──────────────────────────────────────────
 static func apply_status_to_player(game: Node, status: String, turns: int) -> void:
+	# 状態異常耐性（survival_3）: 50% で無効化
+	if SkillTree.has(game, "survival_3") and randf() < 0.30:
+		game.add_message("状態異常を跳ね返した！")
+		game._dash_interrupt = true
+		return
 	match status:
 		"poison":
 			game.p_poisoned_turns = max(game.p_poisoned_turns, turns)
@@ -79,62 +84,92 @@ static func apply_item(game: Node, item: Dictionary) -> bool:
 	if Bestiary.discover_item(item_id):
 		game.add_message("図鑑に %s を登録した。" % item.get("name", "?"))
 	var t: int = item.get("type", -1)
+	var is_cursed: bool = item.get("cursed", false)
+	var is_blessed: bool = item.get("blessed", false)
 	match t:
 		ItemData.TYPE_WEAPON:
 			game._play_item_se(item)
 			if game.p_weapon.get("_iid", -1) == item.get("_iid", -2):
+				# 外そうとした：呪われていれば失敗
+				if game.p_weapon.get("cursed", false):
+					game.add_message("呪われていて外せない！")
+					return false
 				game.p_weapon = {}
-				game.add_message("%s を外した。" % item.get("name","?"))
+				game.add_message("%s を外した。" % SealSystem.display_name(item))
 			else:
-				if item.get("cursed", false):
-					game.add_message("呪われた剣を装備した！外せない…")
 				game.p_weapon = item
-				game.add_message("%s を装備した。" % item.get("name","?"))
+				game.add_message("%s を装備した。" % SealSystem.display_name(item))
+				if is_cursed:
+					game.add_message("…呪われていて外せない！")
 			return false
 
 		ItemData.TYPE_SHIELD:
 			game._play_item_se(item)
 			if game.p_shield.get("_iid", -1) == item.get("_iid", -2):
+				if game.p_shield.get("cursed", false):
+					game.add_message("呪われていて外せない！")
+					return false
 				game.p_shield = {}
-				game.add_message("%s を外した。" % item.get("name","?"))
+				game.add_message("%s を外した。" % SealSystem.display_name(item))
 			else:
 				game.p_shield = item
-				game.add_message("%s を装備した。" % item.get("name","?"))
+				game.add_message("%s を装備した。" % SealSystem.display_name(item))
+				if is_cursed:
+					game.add_message("…呪われていて外せない！")
 			return false
 
 		ItemData.TYPE_RING:
 			game._play_item_se(item)
 			if game.p_ring.get("_iid", -1) == item.get("_iid", -2):
+				if game.p_ring.get("cursed", false):
+					game.add_message("呪われていて外せない！")
+					return false
 				game.p_ring = {}
-				game.add_message("%s を外した。" % item.get("name","?"))
+				game.add_message("%s を外した。" % SealSystem.display_name(item))
 			else:
 				game.p_ring = item
-				game.add_message("%s を装備した。" % item.get("name","?"))
+				game.add_message("%s を装備した。" % SealSystem.display_name(item))
+				if is_cursed:
+					game.add_message("…呪われていて外せない！")
 			return false
 
 		ItemData.TYPE_FOOD:
+			# 呪い：使用失敗（消費しない）
+			if is_cursed:
+				game.add_message("呪われていて食べられない！")
+				return false
 			game._play_item_se(item)
 			var fullness_gain: int = item.get("fullness", 0)
+			if is_blessed and fullness_gain > 0:
+				fullness_gain *= 2
 			if fullness_gain > 0:
 				game.p_fullness = min(100, game.p_fullness + fullness_gain)
 				game._hunger_accum = 0.0
-				game.add_message("%s を食べた。満腹度が回復した。" % item.get("name","?"))
+				game.add_message("%s を食べた。満腹度が回復した。" % SealSystem.display_name(item))
+				if is_blessed:
+					game.add_message("祝福の効果で満腹度が大きく回復！")
 			elif fullness_gain < 0:
 				game.p_fullness = max(0, game.p_fullness + fullness_gain)
 				game.add_message("腐った食料を食べてしまった！")
 			return true
 
 		ItemData.TYPE_POTION:
+			if is_cursed:
+				game.add_message("呪われていて飲めない！")
+				return false
 			game._play_item_se(item)
-			game.add_message("%s を飲んだ。" % item.get("name","?"))
-			var heal: int = item.get("heal", 0)
+			game.add_message("%s を飲んだ。" % SealSystem.display_name(item))
+			var mult: int = 2 if is_blessed else 1
+			var heal: int = item.get("heal", 0) * mult
 			if heal > 0:
 				game.p_hp = min(game.p_hp_max, game.p_hp + heal)
 				game.add_message("HP が %d 回復した。" % heal)
-			var atk_up: int = item.get("atk_up", 0)
+			var atk_up: int = item.get("atk_up", 0) * mult
 			if atk_up > 0:
 				game.p_atk_base += atk_up
 				game.add_message("力が %d 上がった！" % atk_up)
+			if is_blessed and (heal > 0 or atk_up > 0):
+				game.add_message("祝福の効果で効き目が倍増！")
 			match item.get("effect", ""):
 				"antidote":
 					var cured := false
@@ -165,13 +200,26 @@ static func apply_item(game: Node, item: Dictionary) -> bool:
 			return true
 
 		ItemData.TYPE_SCROLL:
+			if is_cursed:
+				game.add_message("呪われていて読めない！")
+				return false
 			apply_scroll(game, item)
+			# 祝福された書：祝福を解除して消費しない（もう一度使える）
+			if is_blessed:
+				item["blessed"] = false
+				game.add_message("祝福が解けた。もう一度使える。")
+				return false
 			return true
 
 		ItemData.TYPE_POT:
-			if item.get("effect", "") == "storage":
+			var pot_eff: String = item.get("effect", "")
+			if pot_eff == "storage" or pot_eff == "synthesis":
 				return InventoryUI.open_storage_pot(game, item)
 			apply_pot(game, item)
+			# 節約（technique_4）: 20%で使用回数を消費しない
+			if SkillTree.has(game, "technique_4") and randf() < 0.15:
+				game.add_message("節約！使用回数を消費しなかった。")
+				return false
 			var uses: int = item.get("uses", 1) - 1
 			if uses <= 0:
 				return true
@@ -180,6 +228,9 @@ static func apply_item(game: Node, item: Dictionary) -> bool:
 
 		ItemData.TYPE_STAFF:
 			apply_staff(game, item)
+			if SkillTree.has(game, "technique_4") and randf() < 0.15:
+				game.add_message("節約！使用回数を消費しなかった。")
+				return false
 			var uses: int = item.get("uses", 1) - 1
 			if uses <= 0:
 				game.add_message("%s は砕け散った。" % item.get("name","?"))
@@ -213,11 +264,27 @@ static func apply_scroll(game: Node, item: Dictionary) -> void:
 						Combat.kill_enemy(game, enemy)
 			Combat.apply_damage_to_player(game, randi_range(3, 8), "爆発の本")
 		"uncurse":
+			var uncursed := false
 			if game.p_weapon.get("cursed", false):
 				game.p_weapon["cursed"] = false
-				game.add_message("剣の呪いが解けた！")
+				game.add_message("%s の呪いが解けた！" % game.p_weapon.get("name", "武器"))
+				uncursed = true
+			if game.p_shield.get("cursed", false):
+				game.p_shield["cursed"] = false
+				game.add_message("%s の呪いが解けた！" % game.p_shield.get("name", "盾"))
+				uncursed = true
+			if game.p_ring.get("cursed", false):
+				game.p_ring["cursed"] = false
+				game.add_message("%s の呪いが解けた！" % game.p_ring.get("name", "指輪"))
+				uncursed = true
+			for inv_item: Dictionary in game.p_inventory:
+				if inv_item.get("cursed", false):
+					inv_item["cursed"] = false
+					uncursed = true
+			if uncursed:
+				game.add_message("持ち物の呪いをすべて解いた！")
 			else:
-				game.add_message("呪いは見つからなかった。")
+				game.add_message("呪われたものは見つからなかった。")
 		"sleep":
 			for enemy in game.enemies:
 				if game.fov_visible.has(enemy["grid_pos"] as Vector2i):

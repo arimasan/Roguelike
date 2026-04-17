@@ -193,6 +193,10 @@ static func run_turn(game: Node, enemy: Dictionary) -> void:
 static func attack(game: Node, enemy: Dictionary) -> void:
 	var dmg: int = max(1, int(enemy["data"].get("atk", 1)) - Combat.calc_def(game))
 	Combat.apply_damage_to_player(game, dmg, enemy["data"]["name"])
+	# 盾の呪印: 5% で攻撃した敵を金縛り
+	if SealSystem.has_curse_def_seal(game.p_shield) and int(game.p_hp) > 0 and randf() < 0.05:
+		ItemEffects.apply_status_to_enemy(game, enemy, "paralyze", 3)
+		game.add_message("盾の呪いが発動！")
 
 ## 隣接する仲間を返す（なければ null）
 static func _find_adjacent_companion(game: Node, ep: Vector2i) -> Variant:

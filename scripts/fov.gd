@@ -36,7 +36,8 @@ static func update(game: Node) -> void:
 	elif _is_in_room(game):
 		_fov_flood_room(game)   # 部屋内: 部屋全体を一括照明
 	else:
-		_fov_radius(game, 1)   # 通路: 周囲1マスのみ
+		var base_r: int = 1 + SkillTree.fov_radius_bonus(game)
+		_fov_radius(game, base_r)   # 通路: 周囲1マス＋千里眼ボーナス
 	game._map_drawer.call("queue_redraw")
 
 ## プレイヤーがいずれかの部屋Rect内にいるか判定
@@ -139,10 +140,13 @@ static func sync_entity_visibility(game: Node) -> void:
 		game._shopkeeper["node"].visible = game.explored.has(game._shopkeeper["grid_pos"] as Vector2i)
 	for si in game.shop_items:
 		si["node"].visible = game.explored.has(si["grid_pos"] as Vector2i)
-	# ワナ：発動済み／「よくみえの腕輪」装備中なら、探索済みで表示
+	# ワナ：発動済み／よくみえの腕輪／罠感知スキルなら可視化
 	var trap_sense: bool = game.p_ring.get("effect", "") == "trap_sense"
+	var skill_sense: bool = SkillTree.has(game, "explore_3")
 	for trap in game.traps:
 		if trap["triggered"] or trap_sense:
 			trap["node"].visible = game.explored.has(trap["grid_pos"] as Vector2i)
+		elif skill_sense and game.fov_visible.has(trap["grid_pos"] as Vector2i):
+			trap["node"].visible = true
 		else:
 			trap["node"].visible = false

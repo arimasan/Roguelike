@@ -241,6 +241,10 @@ static func finish_throw(game: Node, proj: Node2D, item: Dictionary,
 
 # ─── 命中時：アイテム種別に応じた効果を敵に適用 ───────────
 static func apply_hit(game: Node, item: Dictionary, enemy: Dictionary, pos: Vector2i) -> void:
+	# 合成虫: ダメージの代わりにアイテムを飲み込む
+	if enemy["data"].get("synthesis", false):
+		_absorb_into_synth(game, enemy, item, pos)
+		return
 	var t: int = item.get("type", -1)
 	var name: String = item.get("name", "?")
 	var target_name: String = enemy["data"].get("name", "敵")
@@ -282,6 +286,7 @@ static func apply_hit(game: Node, item: Dictionary, enemy: Dictionary, pos: Vect
 
 ## 命中時のダメージ処理: ダメージ数字表示＋HP減＋死亡判定
 static func _hit_damage(game: Node, enemy: Dictionary, dmg: int) -> void:
+	dmg = int(dmg * SkillTree.throw_damage_mult(game))
 	enemy["hp"] -= dmg
 	game._show_damage_number(enemy["grid_pos"] as Vector2i, str(dmg), Color(1.0, 0.8, 0.3))
 	game.add_message("%d ダメージ！" % dmg)
@@ -428,3 +433,33 @@ static func trigger_trap_on_tile(game: Node, idx: int, pos: Vector2i) -> void:
 	if randf() < TrapData.break_chance(trap["type"]):
 		trap["node"].queue_free()
 		game.traps.remove_at(idx)
+
+# ─── 合成虫：アイテム吸収＋合成 ────────────────────────────
+## 合成虫にアイテムを投げた場合の処理
+static func _absorb_into_synth(game: Node, enemy: Dictionary, item: Dictionary, pos: Vector2i) -> void:
+	var enemy_name: String = enemy["data"].get("name", "敵")
+	var item_name: String = SealSystem.display_name(item)
+	if not enemy.has("absorbed"):
+		enemy["absorbed"] = []
+	# 同タイプのアイテムが既に吸収されていれば合成
+	var absorbed: Array = enemy["absorbed"]
+	for i in absorbed.size():
+		var existing: Dictionary = absorbed[i]
+		if int(existing.get("type", -1)) == int(item.get("type", -1)):
+			var it: int = int(item.get("type", -1))
+			if it == ItemData.TYPE_WEAPON or it == ItemData.TYPE_SHIELD:
+				# existing をベースとして item を合成
+				var msgs: Array = SealSystem.synthesize(existing, item)
+				for msg: String in msgs:
+					game.add_message(msg)
+				game.add_message("%s が %s を吐き出した！" % [enemy_name, SealSystem.display_name(existing)])
+				# 合成結果を足元に落とす
+				absorbed.remove_at(i)
+				land_item(game, existing, pos)
+				game._play_se("general_item")
+				return
+	# 合成対象なし: 飲み込む
+	absorbed.append(item)
+	enemy["node"].call("flash", Color(0.4, 0.85, 0.55))
+	game.add_message("%s は %s を飲み込んだ！" % [enemy_name, item_name])
+	game._play_se("general_item")

@@ -124,8 +124,9 @@ static func try_sell(game: Node, index: int) -> void:
 	game.shop_items.append({"item": item, "price": price, "grid_pos": carpet, "node": node})
 	game.p_inventory.remove_at(index)
 	game.shop_sell_cursor = min(int(game.shop_sell_cursor), max(0, game.p_inventory.size() - 1))
+	game.p_gold = int(game.p_gold) + price
 	game._shop_traded = true
-	game.add_message("%s を %dG で売りに出した。" % [item.get("name", "?"), price])
+	game.add_message("%s を %dG で売却した。（所持金: %dG）" % [item.get("name", "?"), price, int(game.p_gold)])
 	game._play_se("coin")
 	game._refresh_hud()
 
@@ -191,3 +192,104 @@ static func handle_input(game: Node, kc: int) -> void:
 					try_buy(game, int(game.shop_cursor))
 			else:
 				try_sell(game, int(game.shop_sell_cursor))
+
+# ─── 未払い拾得（店アイテムを手に取る） ───────────────────
+## 店アイテムを購入せずインベントリに入れる。_shop_price タグで未払いを記録。
+static func pickup_shop_item(game: Node, index: int) -> void:
+	if index < 0 or index >= game.shop_items.size():
+		return
+	if game.p_inventory.size() >= int(game.MAX_INVENTORY):
+		game.add_message("荷物がいっぱいで持てない。")
+		return
+	var si: Dictionary = game.shop_items[index]
+	var item: Dictionary = si["item"]
+	if not item.has("_iid"):
+		item["_iid"] = int(game._next_iid)
+		game._next_iid = int(game._next_iid) + 1
+	item["_shop_price"] = int(si["price"])
+	game.p_inventory.append(item)
+	si["node"].queue_free()
+	game.shop_items.remove_at(index)
+	game.shop_cursor = min(int(game.shop_cursor), max(0, game.shop_items.size() - 1))
+	game.add_message("%s を手に取った。（%dG）" % [item.get("name", "?"), int(item["_shop_price"])])
+	game._play_se("pickup")
+	game._refresh_hud()
+
+# ─── 精算（店員に話しかけた時） ──────────────────────────
+## インベントリ内の _shop_price タグ付きアイテムの代金を所持金から引く。
+## 足りない分は未払いのまま残る。
+static func settle_unpaid(game: Node) -> void:
+	var total_paid: int = 0
+	for item: Dictionary in game.p_inventory:
+		if not item.has("_shop_price"):
+			continue
+		var price: int = int(item["_shop_price"])
+		if int(game.p_gold) >= price:
+			game.p_gold = int(game.p_gold) - price
+			total_paid += price
+			item.erase("_shop_price")
+		else:
+			game.add_message("所持金が足りない！ %s（%dG）は未精算。" % [item.get("name", "?"), price])
+	if total_paid > 0:
+		game.add_message("合計 %dG を支払った。（残金: %dG）" % [total_paid, int(game.p_gold)])
+		game._play_se("coin")
+		game._shop_traded = true
+
+## 未払いアイテムが残っているか
+static func has_unpaid_items(game: Node) -> bool:
+	for item: Dictionary in game.p_inventory:
+		if item.has("_shop_price"):
+			return true
+	return false
+
+# ─── 泥棒発動 ──────────────────────────────────────────────
+## 未払いで店を出た → 泥棒モード開始。店主を強力な敵に変身させる。
+static func trigger_thief(game: Node) -> void:
+	game._thief_mode = true
+	game.add_message("「泥棒ーーッ！！ 誰か捕まえてくれーーッ！！」")
+	# 未払いタグを外す（もう代金の概念はない）
+	for item: Dictionary in game.p_inventory:
+		item.erase("_shop_price")
+	# 店主を敵に変身
+	if not (game._shopkeeper as Dictionary).is_empty():
+		var sk_pos: Vector2i = game._shopkeeper["grid_pos"]
+		if is_instance_valid(game._shopkeeper.get("node")):
+			game._shopkeeper["node"].queue_free()
+		game._shopkeeper = {}
+		# 怒れる店主を敵として配置
+		var data: Dictionary = EnemyData.get_by_id("shopkeeper_angry")
+		if not data.is_empty():
+			var node: Node2D = game._make_tile_node(data["symbol"], data["color"])
+			node.z_index = 1
+			game._entity_layer.add_child(node)
+			node.call("set_grid", sk_pos.x, sk_pos.y)
+			node.call("set_sprite", Assets.enemy_sprite(data.get("id", "")))
+			game.enemies.append(EnemyAI._make_enemy_dict(data, sk_pos, node, false, true))
+	# 残りの店アイテムを解放（もう商品ではない）
+	for si: Dictionary in game.shop_items:
+		if is_instance_valid(si.get("node")):
+			si["node"].queue_free()
+	game.shop_items.clear()
+	game._refresh_hud()
+
+## 泥棒中に盗賊番を1体スポーン（視界外）
+static func spawn_thief_guard(game: Node) -> void:
+	var data: Dictionary = EnemyData.get_by_id("thief_guard")
+	if data.is_empty():
+		return
+	var occupied: Array = [game.p_grid]
+	for e in game.enemies:
+		occupied.append(e["grid_pos"] as Vector2i)
+	for _attempt in 10:
+		var pos: Vector2i = game.generator.random_floor_pos()
+		if pos in occupied:
+			continue
+		if game.fov_visible.has(pos):
+			continue
+		var node: Node2D = game._make_tile_node(data["symbol"], data["color"])
+		node.z_index = 1
+		game._entity_layer.add_child(node)
+		node.call("set_grid", pos.x, pos.y)
+		node.call("set_sprite", Assets.enemy_sprite(data.get("id", "")))
+		game.enemies.append(EnemyAI._make_enemy_dict(data, pos, node, false, true))
+		return
